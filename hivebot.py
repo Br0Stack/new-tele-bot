@@ -1,6 +1,6 @@
 from telegram.ext import Updater, CommandHandler, MessageHandler, filters
 
-updater = Updater(token='ВАШ API КЛЮЧ') # Telegram Bot API key
+updater = Updater(token=TELEGRAM_API_KEY) # Telegram Bot API key
 dispatcher = updater.dispatcher
 
 def startCommand(bot, update):
