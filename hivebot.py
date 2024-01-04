@@ -1,4 +1,5 @@
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+from telegram.ext import Updater, CommandHandler, MessageHandler, filters
+
 updater = Updater(token='ВАШ API КЛЮЧ') # Telegram Bot API key
 dispatcher = updater.dispatcher
 
@@ -10,11 +11,14 @@ def textMessage(bot, update):
     
     # Handlers
 start_command_handler = CommandHandler('start', startCommand)
-text_message_handler = MessageHandler(Filters.text, textMessage)
+text_message_handler = MessageHandler(filters.Text, textMessage)
+
 # Adding handlers to the dispatcher
 dispatcher.add_handler(start_command_handler)
 dispatcher.add_handler(text_message_handler)
+
 # Let's start looking for updates
 updater.start_polling(clean=True)
+
 # Stop Hive chat at any time by pressing Ctrl + C
 updater.idle()

@@ -70,7 +70,7 @@ TELEGRAM_API_TOKEN = "your-telegram-api-token"
 
 To start the bot, run the following command:
 
-python bot.py
+python3 bot.py
 
 he bot will now be active and ready to assist users through Telegram.
 
