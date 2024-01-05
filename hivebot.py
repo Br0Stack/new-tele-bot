@@ -1,24 +1,24 @@
-from telegram.ext import Updater, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+import os
+import asyncio
 
-updater = Updater(token=TELEGRAM_API_KEY) # Telegram Bot API key
-dispatcher = updater.dispatcher
+async def start_command(update, context):
+    await context.bot.send_message(chat_id=update.effective_chat.id, text='Hello, welcome to Hive-Bot. How can I help you today?')
 
-def startCommand(bot, update):
-    bot.send_message(chat_id=update.message.chat_id, text='Hello, welcome to Hive-Bot. How can I help you today?')
-def textMessage(bot, update):
+async def text_message(update, context):
     response = 'I understood your message: ' + update.message.text
-    bot.send_message(chat_id=update.message.chat_id, text=response)
-    
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
+
+if __name__ == '__main__':
+    application = Application.builder().token(os.environ["TELEGRAM_API_KEY"]).build()
+
     # Handlers
-start_command_handler = CommandHandler('start', startCommand)
-text_message_handler = MessageHandler(filters.Text, textMessage)
+    start_command_handler = CommandHandler('start', start_command)
+    text_message_handler = MessageHandler(filters.TEXT, text_message)
 
-# Adding handlers to the dispatcher
-dispatcher.add_handler(start_command_handler)
-dispatcher.add_handler(text_message_handler)
+    # Adding handlers to the application
+    application.add_handler(start_command_handler)
+    application.add_handler(text_message_handler)
 
-# Let's start looking for updates
-updater.start_polling(clean=True)
-
-# Stop Hive chat at any time by pressing Ctrl + C
-updater.idle()
+    # Run the bot until the user presses Ctrl-C
+    application.run_polling()
