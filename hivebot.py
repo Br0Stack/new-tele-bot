@@ -6,11 +6,39 @@ import asyncio
 # MongoDB connection
 client = MongoClient("mongodb+srv://Spenceg85:Gooddog400@cluster0.1fybtbs.mongodb.net/")
 db = client.hivedb
+pipeline = [
+    # Match stage to filter data (if needed, based on some criteria)
+    {
+        "$match": {
+            "date": {"$gte": start_date, "$lte": end_date}  # Example date range
+        }
+    },
+    # Group by relevant fields
+    {
+        "$group": {
+            "_id": {
+                "shipperCity": "$Shipper city",
+                "shipperState": "$Shipper state",
+                "consigneeCity": "$Consignee city",
+                "consigneeState": "$Consignee state",
+                "trailerType": "$Trailer type"
+            },
+            "averageRate": {"$avg": "$Total charges from the customer"},
+            "averageWeight": {"$avg": "$Weight"},
+            # Add more averages or sums as needed
+        }
+    },
+    # Sort by some field if needed
+    {
+        "$sort": {"_id": 1}
+    }
+]
 
 # Carrier rate calculation function
 def calculate_carrier_rate(load):
     # Include the rate calculation logic here
     # You can fetch data from your MongoDB and apply the formula
+    historic_rate_aggregated = db.hive_cx_data.aggregate(pipeline)
     # Return a string with the calculated rate or related information
     return "Calculated rate: ..."
 
