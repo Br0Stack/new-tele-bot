@@ -42,8 +42,29 @@ def calculate_carrier_rate(load):
     # Return a string with the calculated rate or related information
     return "Calculated rate: ..."
 
+def calculate_basic_rate(distance, weight, base_rate):
+    # Constants for rate calculation (customize these as needed)
+    distance_rate_per_mile = 1.5  # example rate per mile
+    weight_rate_per_pound = 0.05  # example rate per pound
+
+    # Calculate the distance and weight components of the rate
+    distance_cost = distance * distance_rate_per_mile
+    weight_cost = weight * weight_rate_per_pound
+
+    # Sum up all components to get the total rate
+    total_rate = base_rate + distance_cost + weight_cost
+
+    return total_rate
+
+# Example usage
+distance = 100  # in miles
+weight = 2000  # in pounds
+base_rate = 100  # base rate in dollars
+
+rate = calculate_basic_rate(distance, weight, base_rate)
+
 async def start_command(update, context):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text='Hello, welcome to Hive-Bot. How can I help you today?')
+    await context.bot.send_message(chat_id=update.effective_chat.id, text='Hello, welcome to Hive-Bot. Please provide your MC or DOT number to get started. Type /list to see a list of all commands that hive-bot can perform.')
 
 async def text_message(update, context):
     if update.message and update.message.text:
@@ -55,7 +76,7 @@ async def text_message(update, context):
             # For example, load data based on some criteria from the user message
             load = {}  # Replace with actual data fetching logic
             response = calculate_carrier_rate(load)
-        else:
+        else
             response = 'I understood your message: ' + user_message
         
         await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
