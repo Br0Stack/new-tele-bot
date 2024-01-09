@@ -6,7 +6,14 @@ import asyncio
 # MongoDB connection
 client = MongoClient("mongodb+srv://Spenceg85:Gooddog400@cluster0.1fybtbs.mongodb.net/")
 db = client.hivedb
-pipeline = [
+
+# Carrier rate calculation function
+def calculate_carrier_rate(load):
+    start_date = load["start_date"]
+    end_date = load["end_date"]
+    
+    # Example aggregation pipeline to calculate the rate
+    pipeline = [
     # Match stage to filter data (if needed, based on some criteria)
     {
         "$match": {
@@ -33,16 +40,13 @@ pipeline = [
         "$sort": {"_id": 1}
     }
 ]
-
-# Carrier rate calculation function
-def calculate_carrier_rate(load):
     # Include the rate calculation logic here
     # You can fetch data from your MongoDB and apply the formula
     historic_rate_aggregated = db.hive_cx_data.aggregate(pipeline)
     # Return a string with the calculated rate or related information
     return "Calculated rate: ..."
 
-def calculate_basic_rate(distance, weight, base_rate):
+def calculate_carrier_rate(distance, weight, base_rate):
     # Constants for rate calculation (customize these as needed)
     distance_rate_per_mile = 1.5  # example rate per mile
     weight_rate_per_pound = 0.05  # example rate per pound
@@ -56,33 +60,51 @@ def calculate_basic_rate(distance, weight, base_rate):
 
     return total_rate
 
-# Example usage
-distance = 100  # in miles
-weight = 2000  # in pounds
-base_rate = 100  # base rate in dollars
-
-rate = calculate_basic_rate(distance, weight, base_rate)
-
 async def start_command(update, context):
     await context.bot.send_message(chat_id=update.effective_chat.id, text='Hello, welcome to Hive-Bot. Please provide your MC or DOT number to get started. Type /list to see a list of all commands that hive-bot can perform.')
 
 async def text_message(update, context):
     if update.message and update.message.text:
-        user_message = update.message.text
+        user_message = update.message.text.lower()
         
         # Example condition to check if the message is about rate calculation or quote request
         if "rate" in user_message:
-            # Fetch necessary data from the database
-            # For example, load data based on some criteria from the user message
-            load = {}  # Replace with actual data fetching logic
-            response = calculate_carrier_rate(load)
-        else
-            response = 'I understood your message: ' + user_message
-        
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
+            # Parse the message for distance, weight, and base rate
+            # For simplicity, let's assume the user inputs text in a specific format like 'distance: 100, weight: 2000, base rate: 100'
+            # In a real-world scenario, you might want to use more sophisticated parsing or NLP techniques
+            distance = None
+            weight = None
+            base_rate = None
+
+    for part in user_message.split(','):
+        if 'distance:' in part:
+            distance = float(part.split(':')[1].strip())
+        elif 'weight:' in part:
+            weight = float(part.split(':')[1].strip())
+        elif 'base rate:' in part:
+            base_rate = float(part.split(':')[1].strip())
+            # Check for missing information and prompt the user
+    missing_info = []
+    if distance is None:
+        missing_info.append("distance")
+    if weight is None:
+        missing_info.append("weight")
+    if base_rate is None:
+        missing_info.append("base rate")
+
+    if missing_info:
+        response = f"Please provide the following missing information: {', '.join(missing_info)}."
     else:
-        # Handle non-text updates or messages without text here
-        pass
+        # Calculate the rate
+        rate = calculate_carrier_rate(distance, weight, base_rate)
+        response = f"Calculated Rate: ${rate:.2f}"
+        
+        # Fetch necessary data from the database
+        # For example, load data based on some criteria from the user message
+        load = {}  # Replace with actual data fetching logic
+        response += ' Based on the load details you provided and historical load rates for similar loads, this should be a fair price for this load: ' + calculate_carrier_rate(load) + ' Is there anything else I can help you with?'
+        
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
 
 if __name__ == '__main__':
     application = Application.builder().token(os.environ["TELEGRAM_API_KEY"]).build()
