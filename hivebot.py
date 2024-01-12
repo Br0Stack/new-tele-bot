@@ -8,6 +8,7 @@ import asyncio
 
 FMCSA_API_KEY = os.environ['FMCSA_API_KEY']  # FMCSA webKey
 MONGO_CLIENT = os.environ['MONGO_CLIENT']  # MongoDB connection string
+OPENAI_API_KEY = os.environ['OPENAI_API_KEY']  # OpenAI API key
 
 # Enable logging
 logging.basicConfig(
@@ -25,6 +26,30 @@ db = client.hivedb
 # Define states for the conversation
 # CHOOSING, TYPING_REPLY = range(2)
 NUMBER, VERIFY, CONFIRM_COMPANY, REENTER_NUMBER = range(4)
+
+async def chat_with_gpt(user_message: str) -> str:
+    # Define the API endpoint and your API key for ChatGPT
+    gpt_api_endpoint = "https://api.openai.com/v1/engines/davinci-codex/completions"
+    headers = {
+        "Authorization": f"Bearer {os.environ(OPENAI_API_KEY)}"
+    }
+
+    # Prepare the data payload
+    payload = {
+        "prompt": user_message,
+        "max_tokens": 150
+    }
+
+    # Make the API request
+    response = requests.post(gpt_api_endpoint, json=payload, headers=headers)
+
+    # Extract and return the GPT response
+    if response.status_code == 200:
+        gpt_response = response.json()['choices'][0]['text'].strip()
+        return gpt_response
+    else:
+        return "I'm having trouble understanding that. Could you rephrase or ask something else?"
+
 
 # Define command handlers. These usually take the two arguments update and context
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
