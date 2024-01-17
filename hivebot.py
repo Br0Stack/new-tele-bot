@@ -5,6 +5,8 @@ import requests
 import logging
 from pymongo import MongoClient
 import asyncio
+import re
+from openai import OpenAI
 
 FMCSA_API_KEY = os.environ['FMCSA_API_KEY']  # FMCSA webKey
 MONGO_CLIENT = os.environ['MONGO_CLIENT']  # MongoDB connection string
@@ -22,33 +24,41 @@ logger = logging.getLogger(__name__)
 # MongoDB connection
 client = MongoClient(MONGO_CLIENT)
 db = client.hivedb
+gpt_client = OpenAI()
+user_conversations = {}  # A dictionary to store conversation history for each user
 
 # Define states for the conversation
 # CHOOSING, TYPING_REPLY = range(2)
 NUMBER, VERIFY, CONFIRM_COMPANY, REENTER_NUMBER = range(4)
+GENERAL = 5
 
-async def chat_with_gpt(user_message: str) -> str:
-    # Define the API endpoint and your API key for ChatGPT
-    gpt_api_endpoint = "https://api.openai.com/v1/engines/davinci-codex/completions"
-    headers = {
-        "Authorization": f"Bearer {os.environ(OPENAI_API_KEY)}"
-    }
+def update_conversation_history(user_id, user_message, bot_response):
+    if user_id not in user_conversations:
+        user_conversations[user_id] = []
 
-    # Prepare the data payload
-    payload = {
-        "prompt": user_message,
-        "max_tokens": 150
-    }
+    user_conversations[user_id].append({"role": "user", "content": user_message})
+    user_conversations[user_id].append({"role": "assistant", "content": bot_response})
 
-    # Make the API request
-    response = requests.post(gpt_api_endpoint, json=payload, headers=headers)
 
-    # Extract and return the GPT response
-    if response.status_code == 200:
-        gpt_response = response.json()['choices'][0]['text'].strip()
+def chat_with_gpt(user_id, user_message):
+    history = user_conversations.get(user_id, [])
+    history.append({"role": "user", "content": user_message})
+
+    try:
+        response = gpt_client.chat.completions.create(
+            model="gpt-4-0613",
+            messages=history,
+            max_tokens=180,
+        )
+
+        # Extract the text response and update history
+        gpt_response = response.choices[0].message.content if response.choices else ""
+        update_conversation_history(user_id, user_message, gpt_response)
         return gpt_response
-    else:
+    except Exception as e:
+        logger.error(f"Error in chat_with_gpt: {e}")
         return "I'm having trouble understanding that. Could you rephrase or ask something else?"
+
 
 
 # Define command handlers. These usually take the two arguments update and context
@@ -106,17 +116,29 @@ async def received_number(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def confirm_company(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_response = update.message.text
     if user_response == 'YES':
-        await update.message.reply_text("Your MC/DOT was successfully verified. You can now use Hive Bot.")
-        # Store the MC/DOT and user in the hive database
-        # ... [Database storing logic]
-        return VERIFY  # Or any other state to continue the conversation
+        await update.message.reply_text("Your MC/DOT was successfully verified. You can now use Hive Bot.", reply_markup=ReplyKeyboardRemove())
+        return GENERAL  # Transition to GENERAL state
     elif user_response == 'NO':
-        await update.message.reply_text("Please re-enter your MC/DOT number.")
-        return REENTER_NUMBER
+        await update.message.reply_text("Please re-enter your MC/DOT number.", reply_markup=ReplyKeyboardRemove())
+        return NUMBER
 
 async def reenter_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Enter your MC or DOT number:", reply_markup=ReplyKeyboardRemove())
-    return NUMBER
+    number = update.message.text
+    context.user_data['number'] = number
+
+    response = await verify_number(number)
+    if response and response['status'] in ['verified', 'ask']:
+        # Reuse the code to ask for company confirmation
+        companyName = response.get('data', {}).get('carrier', {}).get('legalName') or \
+                      response.get('data', {}).get('carrier', {}).get('dbaName')
+        reply_keyboard = [['YES', 'NO']]
+        markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+        await update.message.reply_text(f"Is your company name {companyName}?", reply_markup=markup)
+        return CONFIRM_COMPANY
+    else:
+        # Handle non-verified or error cases
+        await update.message.reply_text("I couldn't find any MC/DOT info for that number. Please try again or contact support.")
+        return NUMBER  # Loop back to NUMBER state
 
 async def verify_number(number: str) -> dict:
     """Verify the MC or DOT number."""
@@ -131,27 +153,43 @@ async def verify_number(number: str) -> dict:
     else:
         return {'status': 'error', 'message': 'Error verifying MC/DOT number.'}
 
-# async def save_mc_dot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-#     """Save the MC or DOT number to the database."""
-#     user_data = context.user_data
-#     choice = user_data['choice']
-#     number = update.message.text
-        
-#     try:
-#             # Verify the MC/DOT number
-#             response = await verify_mc_dot(number) 
-#             print(response)
-#             # requests.get("https://mobile.fmcsa.dot.gov/qc/services/carriers/docket-number/{user_message}?webKey={}")
-#             if response and response['status']== 'verified':
-#                 dbaName = response['data']['carrier']['legalName'] or response['data']['carrier']['dbaName']
-#                 await update.message.reply_text(f"Is your company name {dbaName}? If not, please re-enter your MC/DOT number.")
-#                 await context.bot.send_message(chat_id=update.effective_chat.id, text='Your MC/DOT number has been verified. You can now use Hive Bot.')
-#             else:
-#                 await context.bot.send_message(chat_id=update.effective_chat.id, text='Your MC/DOT number could not be verified. Please try again or contact support.')
-#     except Exception as e:
-#             logger.error(f"Database error: {e}")
-#             await update.message.reply_text("Sorry, there was an error verifying user details.")           
-#             return ConversationHandler.END
+rate_quote_function = {
+    "type": "function",
+    "function": {
+        "name": "calculate_dynamic_rate_quote",
+        "description": "Calculate dynamic rate quote for carriers based on input criteria",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "distance": {"type": "number"},
+                "weight": {"type": "number"},
+                "shipperCity": {"type": "string"},
+                "shipperState": {"type": "string"},
+                "consigneeCity": {"type": "string"},
+                "consigneeState": {"type": "string"},
+                "equipmentType": {"type": "string"},
+                "hazmat": {"type": "boolean"},
+                # Add any other parameters you require
+            },
+            "required": ["distance", "weight", "shipperCity", "shipperState", "consigneeCity", "consigneeState", "equipmentType", "hazmat"]
+        },
+    }
+}
+
+def calculate_rate_with_gpt(user_message: str):
+    try:
+        completion = gpt_client.chat.completions.create(
+            model="gpt-4-0613",
+            messages=[{"role": "user", "content": user_message}],
+            tools=[rate_quote_function],
+            tool_choice="auto"
+        )
+        if completion.choices:
+            return completion.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error in calculate_rate_with_gpt: {e}")
+    return "Sorry, I couldn't process that."
+
 
 
 def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -239,119 +277,162 @@ def calculate_carrier_rate(distance, weight, base_rate, consignee_city, consigne
 
     return total_rate
 
-async def text_message(update, context):
+async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    if update.message and update.message.text:
-        user_message = update.message.text.lower()
+    user_message = update.message.text.lower() if update.message and update.message.text else ''
+
+    # Check for specific keywords and handle accordingly
+    if "calculate rate" in user_message or "rate quote" or "rate" in user_message:
+        response = calculate_rate_with_gpt(user_message)
+        # response = await handle_rate_quote_request(user_message)
+    elif "mc lookup" in user_message or "mc number" in user_message:
+        # Handle MC/DOT number lookup
+        response = await handle_mc_dot_lookup(user_message)
     else:
-        user_message = update.message.lower()
+    # Pass the user message along with the user (chat) ID
+        response = chat_with_gpt(chat_id, user_message)
+    # Check if response is not empty before sending the message
+    if response and response.strip():
+        await context.bot.send_message(chat_id=chat_id, text=response)
+    else:
+        # Send a default message if the response is empty
+        await context.bot.send_message(chat_id=chat_id, text="I'm sorry, I couldn't process your request. Please try again or ask for something else.")
+# async def handle_rate_quote_request(user_message):
+#     # Parse the message for necessary information
+#     # Perform the rate calculation
+#     # ...
+#     return "Calculated Rate: ..."
 
-    # # Check if the message is an MC or DOT number
-    # if user_message.isdigit():
-    # # Make an API call to verify the MC/DOT number
-    #     response = verify_mc_dot(user_message) 
-    #     # requests.get("https://mobile.fmcsa.dot.gov/qc/services/carriers/docket-number/{user_message}?webKey={}")
-    #     if response['status']== 'verified':
-    # # Store the MC/DOT number in the database
-    #         db.users.update_one({'chat_id': chat_id}, {'$set': {'mc_dot_number': user_message, 'fmcsa_data': response}}, upsert=True)
-    #         # Is your company name {dbaName}? If not, please re-enter your MC/DOT number.
-    #         await context.bot.send_message(chat_id=chat_id, text='Your MC/DOT number has been verified. You can now use Hive Bot.')
-    #     else:
-    #         await context.bot.send_message(chat_id=chat_id, text='Your MC/DOT number could not be verified. Please try again or contact support.')
-    #     return
-    
+async def handle_mc_dot_lookup(user_message):
+    # Extract MC/DOT number from the message
+    # Perform the lookup
+    # ...
+    return "MC/DOT Lookup Result: ..."
+
+
+async def handle_mc_dot_lookup(user_message):
+    # Extract MC/DOT number from the message
+    # Perform the lookup
+    # ...
+    return "MC/DOT Lookup Result: ..."
+
+
+async def handle_rate_quote_request(update, context):
     if update.message and update.message.text:
         user_message = update.message.text.lower()
-        
-        # Example condition to check if the message is about rate calculation or quote request
-        if "rate" in user_message:
-            # Parse the message for distance, weight, and base rate
-            # For simplicity, let's assume the user inputs text in a specific format like 'distance: 100, weight: 2000, base rate: 100'
-            # In a real-world scenario, you might want to use more sophisticated parsing or NLP techniques
-            distance = None
-            shipper_city = None
-            shipper_state = None
-            consignee_city = None
-            consignee_state = None
-            weight = None
+        # Parse the message for distance, weight, and base rate
+        # For simplicity, let's assume the user inputs text in a specific format like 'distance: 100, weight: 2000, base rate: 100'
+        # In a real-world scenario, you might want to use more sophisticated parsing or NLP techniques
+        distance = None
+        shipper_city = None
+        shipper_state = None
+        consignee_city = None
+        consignee_state = None
+        weight = None
 
-            for part in user_message.split(','):
-                if 'distance:' in part:
-                    distance = float(part.split(':')[1].strip())
-                elif 'weight:' in part:
-                    weight = float(part.split(':')[1].strip())
-                elif 'shipper city:' in part:
-                    shipper_city = part.split(':')[1].strip()
-                elif 'shipper state:' in part:
-                    shipper_state = part.split(':')[1].strip()
-                elif 'consignee city:' in part:
-                    consignee_city = part.split(':')[1].strip()
-                elif 'consignee state:' in part:
-                    consignee_state = part.split(':')[1].strip()
-                    
-                    # Check for missing information and prompt the user
-                    missing_info = []
-                if distance is None:
-                    missing_info.append("distance")
-                if weight is None:
-                    missing_info.append("weight")
-                if consignee_city is None:
-                    missing_info.append("consignee city")
-                if consignee_state is None:
-                    missing_info.append("consignee state")
-                if shipper_city is None:
-                    missing_info.append("shipper city")
-                if shipper_state is None:
-                    missing_info.append("shipper state")
+        for part in user_message.split(','):
+            if 'distance:' in part:
+                distance = float(part.split(':')[1].strip())
+            elif 'weight:' in part:
+                weight = float(part.split(':')[1].strip())
+            elif 'shipper city:' in part:
+                shipper_city = part.split(':')[1].strip()
+            elif 'shipper state:' in part:
+                shipper_state = part.split(':')[1].strip()
+            elif 'consignee city:' in part:
+                consignee_city = part.split(':')[1].strip()
+            elif 'consignee state:' in part:
+                consignee_state = part.split(':')[1].strip()
+                
+                # Check for missing information and prompt the user
+                missing_info = []
+            if distance is None:
+                missing_info.append("distance")
+            if weight is None:
+                missing_info.append("weight")
+            if consignee_city is None:
+                missing_info.append("consignee city")
+            if consignee_state is None:
+                missing_info.append("consignee state")
+            if shipper_city is None:
+                missing_info.append("shipper city")
+            if shipper_state is None:
+                missing_info.append("shipper state")
 
-                if missing_info:
-                    response = f"Please provide the following missing information: {', '.join(missing_info)}."
-                else:
-                    # Calculate the rate
-                    rate = calculate_carrier_rate(distance, weight, consignee_city, consignee_state, shipper_city, shipper_state)
-                    response = f"Calculated Rate: ${rate:.2f}"
+            if missing_info:
+                response = f"Please provide the following missing information: {', '.join(missing_info)}."
+            else:
+                # Calculate the rate
+                rate = calculate_carrier_rate(distance, weight, consignee_city, consignee_state, shipper_city, shipper_state)
+                response = f"Calculated Rate: ${rate:.2f}"
+                
+                # Fetch necessary data from the database
+                # For example, load data based on some criteria from the user message
+                load = {}  # Replace with actual data fetching logic
+                response += ' Based on the load details you provided and historical load rates for similar loads, this should be a fair price for this load: ' + calculate_carrier_rate(load) + ' Is there anything else I can help you with?'
+    
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
                     
-                    # Fetch necessary data from the database
-                    # For example, load data based on some criteria from the user message
-                    load = {}  # Replace with actual data fetching logic
-                    response += ' Based on the load details you provided and historical load rates for similar loads, this should be a fair price for this load: ' + calculate_carrier_rate(load) + ' Is there anything else I can help you with?'
-        
-                    await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
+def error_handler(update, context):
+    """Handle any errors that occur."""
+    logger.error(f"Update {update} caused error {context.error}")
+    update.message.reply_text('Sorry, an error occurred. Let’s try something else.')
+    
+async def verify_state_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # Logic for the VERIFY state
+    # Provide options or guide the user to the next step
+    await update.message.reply_text("Verification complete. How can I assist you further?")
+    return VERIFY  # Or transition to a different state if needed
+
+def timeout(update, context):
+    """End the conversation after a timeout."""
+    update.message.reply_text('Session timed out. Please start again.')
+    return ConversationHandler.END
+
+def end_conversation(update, context):
+    """End the conversation gracefully."""
+    update.message.reply_text('Thank you for using Hive-Bot. Have a great day!')
+    return ConversationHandler.END
 
 if __name__ == '__main__':
-    application = Application.builder().token(os.environ["TELEGRAM_API_KEY"]).build()
+    try:
+        # Initialize the application
+        application = Application.builder().token(os.environ["TELEGRAM_API_KEY"]).build()
 
-    # Handlers
-    start_command_handler = CommandHandler('start', start_command)
-    text_message_handler = MessageHandler(filters.TEXT, text_message)
-    # Conversation handler setup
-    conv_handler = ConversationHandler(
-    entry_points=[CommandHandler('start', start_command)],
-    states={
+        # Handlers
+        start_command_handler = CommandHandler('start', start_command)
+        text_message_handler = MessageHandler(filters.TEXT, text_message)
+        # Conversation handler setup
+        conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start_command)],
+        states={
         NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_number)],
         CONFIRM_COMPANY: [MessageHandler(filters.Regex('^(YES|NO)$'), confirm_company)],
         REENTER_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, reenter_number)],
-        # CHOOSING: [MessageHandler(filters.Regex('^(YES|NO)$'), received_number)],
+        VERIFY: [MessageHandler(filters.TEXT & ~filters.COMMAND, verify_state_handler)],
+        GENERAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, text_message)],
     },
-    fallbacks=[CommandHandler('cancel', cancel)],
+    fallbacks=[CommandHandler('cancel', cancel), CommandHandler('end', end_conversation)],
+    conversation_timeout=300,
 )
 
-#     conv_handler = ConversationHandler(
-#     entry_points=[CommandHandler('start', start_command)],
-#     states={
-#         CHOOSING: [MessageHandler(filters.Regex('^(MC|DOT)$'), received_number)],
-#         TYPING_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_mc_dot)],
-#     },
-#     fallbacks=[CommandHandler('cancel', cancel)],
-# )
-    application.add_handler(conv_handler)
+    #     conv_handler = ConversationHandler(
+    #     entry_points=[CommandHandler('start', start_command)],
+    #     states={
+    #         CHOOSING: [MessageHandler(filters.Regex('^(MC|DOT)$'), received_number)],
+    #         TYPING_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_mc_dot)],
+    #     },
+    #     fallbacks=[CommandHandler('cancel', cancel)],
+    # )
+        application.add_handler(conv_handler)
 
-    # Adding handlers to the application
-    application.add_handler(start_command_handler)
-    application.add_handler(text_message_handler)
+        # Adding handlers to the application
+        application.add_handler(start_command_handler)
+        application.add_handler(text_message_handler)
 
-    # Run the bot and Flask app
-    asyncio.get_event_loop().create_task(application.run_polling())
-
-    #  # Run the bot until the user presses Ctrl-C
-    application.run_polling()
+        # Run the bot and Flask app
+        asyncio.get_event_loop().create_task(application.run_polling())
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        #  # Run the bot until the user presses Ctrl-C
+        application.run_polling()
