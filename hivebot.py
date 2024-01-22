@@ -446,6 +446,9 @@ def next_key_to_collect(rate_info):
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_message = update.message.text.lower() if update.message and update.message.text else ''
+    
+    #let the user know the bot is typing
+await bot.send_chat_action(chat_id=chat_id, action=telegram.constants.ChatAction.TYPING)
 
     # If the message is too general, ask for more details
     if user_message.strip() in ["rate", "rate quote"]:
