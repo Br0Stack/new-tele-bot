@@ -280,6 +280,9 @@ def calculate_carrier_rate(distance, weight, base_rate, consignee_city, consigne
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_message = update.message.text.lower() if update.message and update.message.text else ''
+    
+    #let the user know the bot is typing
+await bot.send_chat_action(chat_id=chat_id, action=telegram.constants.ChatAction.TYPING)
 
     # Check for specific keywords and handle accordingly
     if "calculate rate" in user_message or "rate quote" or "rate" in user_message:
