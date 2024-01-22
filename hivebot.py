@@ -7,10 +7,12 @@ from pymongo import MongoClient
 import asyncio
 import re
 from openai import OpenAI
+import json
 
 FMCSA_API_KEY = os.environ['FMCSA_API_KEY']  # FMCSA webKey
 MONGO_CLIENT = os.environ['MONGO_CLIENT']  # MongoDB connection string
 OPENAI_API_KEY = os.environ['OPENAI_API_KEY']  # OpenAI API key
+MAX_TOKENS_LIMIT = 280  # Max tokens limit for GPT-4
 
 # Enable logging
 logging.basicConfig(
@@ -33,32 +35,58 @@ NUMBER, VERIFY, CONFIRM_COMPANY, REENTER_NUMBER = range(4)
 GENERAL = 5
 
 def update_conversation_history(user_id, user_message, bot_response):
-    if user_id not in user_conversations:
-        user_conversations[user_id] = []
+    conversation = {
+        "user_id": user_id,
+        "messages": [{"role": "user", "content": user_message},
+                     {"role": "assistant", "content": bot_response}]
+    }
+    db.conversations.update_one(
+        {"user_id": user_id},
+        {"$push": {"messages": {"$each": conversation["messages"]}}},
+        upsert=True
+    )
 
-    user_conversations[user_id].append({"role": "user", "content": user_message})
-    user_conversations[user_id].append({"role": "assistant", "content": bot_response})
+
+def get_conversation_history(user_id):
+    try:
+        conversation_record = db.conversations.find_one({"user_id": user_id})
+        return conversation_record["messages"] if conversation_record else []
+    except Exception as e:
+        logger.error(f"Error fetching conversation history: {e}")
+        return []
 
 
-def chat_with_gpt(user_id, user_message):
-    history = user_conversations.get(user_id, [])
+async def chat_with_gpt(user_id, user_message, task="conversation"):
+    history = get_conversation_history(user_id)
     history.append({"role": "user", "content": user_message})
+
+    # Convert each message content to string and then join
+    content_history = " ".join([msg.get('content', '') for msg in history])
+
+    # Truncate history if it's too long
+    while len(content_history) > MAX_TOKENS_LIMIT:
+        history.pop(0)
+        content_history = " ".join([msg.get('content', '') for msg in history])
 
     try:
         response = gpt_client.chat.completions.create(
-            model="gpt-4-0613",
+            model="gpt-4-1106-preview",
             messages=history,
-            max_tokens=180,
+            max_tokens=200,
+            stop=None if task == "conversation" else ["\n"]  # Adjust stopping condition based on the task
         )
 
         # Extract the text response and update history
         gpt_response = response.choices[0].message.content if response.choices else ""
-        update_conversation_history(user_id, user_message, gpt_response)
+        
+        # Update conversation history for general conversation
+        if task == "conversation":
+            update_conversation_history(user_id, user_message, gpt_response)
+
         return gpt_response
     except Exception as e:
         logger.error(f"Error in chat_with_gpt: {e}")
         return "I'm having trouble understanding that. Could you rephrase or ask something else?"
-
 
 
 # Define command handlers. These usually take the two arguments update and context
@@ -153,7 +181,7 @@ async def verify_number(number: str) -> dict:
     else:
         return {'status': 'error', 'message': 'Error verifying MC/DOT number.'}
 
-rate_quote_function = {
+rate_quote_tool = {
     "type": "function",
     "function": {
         "name": "calculate_dynamic_rate_quote",
@@ -169,28 +197,59 @@ rate_quote_function = {
                 "consigneeState": {"type": "string"},
                 "equipmentType": {"type": "string"},
                 "hazmat": {"type": "boolean"},
-                # Add any other parameters you require
             },
             "required": ["distance", "weight", "shipperCity", "shipperState", "consigneeCity", "consigneeState", "equipmentType", "hazmat"]
-        },
+        }
     }
 }
 
-def calculate_rate_with_gpt(user_message: str):
+
+def calculate_rate_with_gpt(user_message: str, user_id: str):
     try:
+        print(f"User ID: {user_id}, User Message: {user_message}")
+        # Fetch and filter the conversation history
+        history = get_conversation_history(user_id)
+        valid_history = [msg for msg in history if isinstance(msg.get('content'), str) and msg['content']]
+
+        # Append the current user message to the valid history
+        valid_history.append({"role": "user", "content": user_message})
+        print("Valid history being sent to GPT-4:", valid_history)
+
+        # Send the filtered history to GPT-4
         completion = gpt_client.chat.completions.create(
             model="gpt-4-0613",
-            messages=[{"role": "user", "content": user_message}],
+            messages=valid_history,
             tools=[rate_quote_function],
             tool_choice="auto"
         )
-        if completion.choices:
-            return completion.choices[0].message.content
+        print("Completion object from GPT-4:", completion)
+        
+    # Check if rate calculation is needed
+        if "calculate_dynamic_rate_quote" in gpt_response:
+            # Extract necessary data for rate calculation from user_message or history
+            # For example:
+            # distance = 1800  # Extract from user_message or history
+            # weight = 20000  # Extract from user_message or history
+            # base_rate = 100  # This could be a default or calculated value
+            # Modify these values as needed
+
+            # Calculate rate
+            rate = calculate_carrier_rate(distance, weight, consignee_city, consignee_state, shipper_city, shipper_state)
+
+            # Construct a response with the calculated rate
+            gpt_response = f"The estimated rate is: ${rate:.2f}"
+        
+        if completion.choices and len(completion.choices) > 0:
+            gpt_response = completion.choices[0].message.content
+            update_conversation_history(user_id, user_message, gpt_response)
+            return gpt_response
+        else:
+            logger.error(f"No response from GPT-4 for rate quote calculation. Completion object: {completion}")
+            return "GPT-4 did not provide a response."
+
     except Exception as e:
         logger.error(f"Error in calculate_rate_with_gpt: {e}")
-    return "Sorry, I couldn't process that."
-
-
+        return f"Sorry, I couldn't process that due to an error: {e}"
 
 def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Cancels and ends the conversation."""
@@ -225,153 +284,390 @@ async def verify_mc(user_message):
             return {'status': 'not_verified', 'message': 'MC info not found. Please re-enter an MC or DOT number.'}
 
 # Carrier rate calculation function
-def calculate_carrier_rate(load):
-    start_date = load["start_date"]
-    end_date = load["end_date"]
+# def calculate_carrier_rate(load):
+#     start_date = load["start_date"]
+#     end_date = load["end_date"]
     
-    # Example aggregation pipeline to calculate the rate
-    pipeline = [
-    # Match stage to filter data (if needed, based on some criteria)
-    {
-        "$match": {
-            "date": {"$gte": start_date, "$lte": end_date}  # Example date range
-        }
-    },
-    # Group by relevant fields
-    {
-        "$group": {
-            "_id": {
-                "shipperCity": "$Shipper city",
-                "shipperState": "$Shipper state",
-                "consigneeCity": "$Consignee city",
-                "consigneeState": "$Consignee state",
-                "trailerType": "$Trailer type"
-            },
-            "averageRate": {"$avg": "$Total charges from the customer"},
-            "averageWeight": {"$avg": "$Weight"},
-            # Add more averages or sums as needed
-        }
-    },
-    # Sort by some field if needed
-    {
-        "$sort": {"_id": 1}
+#     # Example aggregation pipeline to calculate the rate
+#     pipeline = [
+#     # Match stage to filter data (if needed, based on some criteria)
+#     {
+#         "$match": {
+#             "date": {"$gte": start_date, "$lte": end_date}  # Example date range
+#         }
+#     },
+#     # Group by relevant fields
+#     {
+#         "$group": {
+#             "_id": {
+#                 "shipperCity": "$Shipper city",
+#                 "shipperState": "$Shipper state",
+#                 "consigneeCity": "$Consignee city",
+#                 "consigneeState": "$Consignee state",
+#                 "trailerType": "$Trailer type"
+#             },
+#             "averageRate": {"$avg": "$Total charges from the customer"},
+#             "averageWeight": {"$avg": "$Weight"},
+#             # Add more averages or sums as needed
+#         }
+#     },
+#     # Sort by some field if needed
+#     {
+#         "$sort": {"_id": 1}
+#     }
+# ]
+#     # Include the rate calculation logic here
+#     # You can fetch data from your MongoDB and apply the formula
+#     historic_rate_aggregated = db.hive_cx_data.aggregate(pipeline)
+#     # Return a string with the calculated rate or related information
+#     return historic_rate_aggregated
+
+def calculate_carrier_rate(load_type, equipment_type, distance, weight, volume_ft3=None, hazmat=False, extra_stops=0, driver_assist=False, storage_days=0, toll_charges=0):
+    # Constants
+    base_rate_per_mile = 1.2
+    fuel_surcharge_per_mile = 0.5  # Example value, adjust as needed
+
+    # Equipment type multiplier
+    equipment_multiplier = {
+        "V": 1,
+        "PO": 1,
+        "FO": 0.8,
+        "R": 1.2,
+        "VM": 1.7,
+        "RM": 2.2,
+        "F": 0.8
     }
-]
-    # Include the rate calculation logic here
-    # You can fetch data from your MongoDB and apply the formula
-    historic_rate_aggregated = db.hive_cx_data.aggregate(pipeline)
-    # Return a string with the calculated rate or related information
-    return historic_rate_aggregated
 
-def calculate_carrier_rate(distance, weight, base_rate, consignee_city, consignee_state, shipper_city, shipper_state):
-    # Constants for rate calculation (customize these as needed)
-    distance_rate_per_mile = 1.5  # example rate per mile
-    weight_rate_per_pound = 0.05  # example rate per pound
+    # Calculate base rate
+    base_rate = distance * base_rate_per_mile * equipment_multiplier.get(equipment_type, 1)
 
-    # Calculate the distance and weight components of the rate
-    distance_cost = distance * distance_rate_per_mile
-    weight_cost = weight * weight_rate_per_pound
+    # Add fuel surcharge
+    total_rate = base_rate + (distance * fuel_surcharge_per_mile)
 
-    # Sum up all components to get the total rate
-    total_rate = base_rate + distance_cost + weight_cost
+    # Additional charges
+    if driver_assist:
+        driver_assist_fee = 150 if load_type == "FTL" else 100
+        total_rate += driver_assist_fee
+
+    if hazmat:
+        hazmat_fee = 500 if load_type == "FTL" else 300
+        total_rate += hazmat_fee
+
+    # Extra stops charge
+    extra_stop_fee = 75 * extra_stops
+    total_rate += extra_stop_fee
+
+    # LTL specific charges
+    if load_type == "LTL":
+        weight_charge = weight * 0.3
+        volume_charge = volume_ft3 * 10 if volume_ft3 else 0
+        total_rate += weight_charge + volume_charge
+
+    # Storage fees and toll charges
+    storage_fee = 200 * storage_days
+    total_rate += storage_fee + toll_charges
 
     return total_rate
+
+# def calculate_carrier_rate(distance, weight, equipmentType, shipperCity, shipperState, consigneeCity, consigneeState, length_ft=None, trailer_type=None, hazmat=False, number_of_stops=1, driver_type='solo', driver_assistance=False, storage_days=0, toll_charges=0):
+    # Constants for rate calculation (customize these as needed)
+    base_rate_per_mile = 1.5  # Base rate per mile
+    weight_rate_per_pound = 0.05  # Rate per pound
+
+    # Adjustments based on trailer type and other factors
+    trailer_type_modifier = {
+        "R": 1.1,  # Reefer
+        "": 1.0,  # Dry van
+        "F": 1.05,  # Flatbed
+        "S": 1.15,  # Step deck
+        "DD": 1.2,  # Double drop
+        "LB": 1.25,  # Lowboy
+        "A": 1.3,  # Auto carrier
+        "T": 1.35,  # Tanker
+        "D": 1.4,  # Dump
+        "H": 1.45,  # Hot shot
+        "AH": 1.5,  # Auto hauler
+        "HZ": 1.55,  # Hazmat
+        "P": 1.6,  # Power only
+    }
+        # Add other trailer types and their modifiers here
+    #         if equipmentType == "flatbed":
+    #     equip_type_modifier = 1.05
+    # elif equipmentType == "reefer":
+    #     equip_type_modifier = 1.1
+    # elif equipmentType == "van":
+    #     equip_type_modifier = 1.15
+    # elif equipmentType == "power only":
+    #     equip_type_modifier = 1.2
+    # elif equipmentType == "step deck":
+    #     equip_type_modifier = 1.25
+    # elif equipmentType == "double drop":
+    #     equip_type_modifier = 1.3
+    # elif equipmentType == "lowboy":
+    #     equip_type_modifier = 1.35
+    # elif equipmentType == "auto carrier":
+    #     equip_type_modifier = 1.4
+    # elif equipmentType == "tanker":
+    #     equip_type_modifier = 1.45
+    # elif equipmentType == "dump":
+    #     equip_type_modifier = 1.5
+    # elif equipmentType == "hot shot":
+    #     equip_type_modifier = 1.55
+    # elif equipmentType == "auto hauler":
+    #     equip_type_modifier = 1.6
+    # elif equipmentType == "hazmat":
+    #     equip_type_modifier = 1.65
+
+    hazmat_modifier = 1.2 if hazmat else 1.0
+    driver_assistance_fee = 150 if driver_assistance else 0
+    stop_fee = 75 * (number_of_stops - 1)  # Additional $75 per extra stop
+    storage_fee = 200 * storage_days  # $200 per day for storage
+    driver_type_modifier = 1.1 if driver_type == 'team' else 1.0
+
+    # Calculate the distance, weight, and trailer type components of the rate
+    distance_cost = distance * base_rate_per_mile
+    weight_cost = weight * weight_rate_per_pound
+    equipment_modifier = trailer_type_modifier.get(trailer_type, 1.0)
+
+    # Sum up all components to get the total rate
+    total_rate = (distance_cost + weight_cost) * equipment_modifier * hazmat_modifier * driver_type_modifier
+    total_rate += driver_assistance_fee + stop_fee + storage_fee + toll_charges
+
+    # Ensure the rate is positive
+    return max(total_rate, 0)
+
+def next_key_to_collect(rate_info):
+    required_keys = ["distance", "weight", "equipmentType", "shipperCity", "shipperState", "consigneeCity", "consigneeState"]
+    for key in required_keys:
+        if key not in rate_info:
+            return key
+    return None
 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_message = update.message.text.lower() if update.message and update.message.text else ''
 
-    # Check for specific keywords and handle accordingly
-    if "calculate rate" in user_message or "rate quote" or "rate" in user_message:
-        response = calculate_rate_with_gpt(user_message)
-        # response = await handle_rate_quote_request(user_message)
-    elif "mc lookup" in user_message or "mc number" in user_message:
-        # Handle MC/DOT number lookup
-        response = await handle_mc_dot_lookup(user_message)
-    else:
-    # Pass the user message along with the user (chat) ID
-        response = chat_with_gpt(chat_id, user_message)
-    # Check if response is not empty before sending the message
-    if response and response.strip():
-        await context.bot.send_message(chat_id=chat_id, text=response)
-    else:
-        # Send a default message if the response is empty
-        await context.bot.send_message(chat_id=chat_id, text="I'm sorry, I couldn't process your request. Please try again or ask for something else.")
-# async def handle_rate_quote_request(user_message):
-#     # Parse the message for necessary information
-#     # Perform the rate calculation
-#     # ...
-#     return "Calculated Rate: ..."
-
-async def handle_mc_dot_lookup(user_message):
-    # Extract MC/DOT number from the message
-    # Perform the lookup
-    # ...
-    return "MC/DOT Lookup Result: ..."
-
-
-async def handle_mc_dot_lookup(user_message):
-    # Extract MC/DOT number from the message
-    # Perform the lookup
-    # ...
-    return "MC/DOT Lookup Result: ..."
-
-
-async def handle_rate_quote_request(update, context):
-    if update.message and update.message.text:
-        user_message = update.message.text.lower()
-        # Parse the message for distance, weight, and base rate
-        # For simplicity, let's assume the user inputs text in a specific format like 'distance: 100, weight: 2000, base rate: 100'
-        # In a real-world scenario, you might want to use more sophisticated parsing or NLP techniques
-        distance = None
-        shipper_city = None
-        shipper_state = None
-        consignee_city = None
-        consignee_state = None
-        weight = None
-
-        for part in user_message.split(','):
-            if 'distance:' in part:
-                distance = float(part.split(':')[1].strip())
-            elif 'weight:' in part:
-                weight = float(part.split(':')[1].strip())
-            elif 'shipper city:' in part:
-                shipper_city = part.split(':')[1].strip()
-            elif 'shipper state:' in part:
-                shipper_state = part.split(':')[1].strip()
-            elif 'consignee city:' in part:
-                consignee_city = part.split(':')[1].strip()
-            elif 'consignee state:' in part:
-                consignee_state = part.split(':')[1].strip()
-                
-                # Check for missing information and prompt the user
-                missing_info = []
-            if distance is None:
-                missing_info.append("distance")
-            if weight is None:
-                missing_info.append("weight")
-            if consignee_city is None:
-                missing_info.append("consignee city")
-            if consignee_state is None:
-                missing_info.append("consignee state")
-            if shipper_city is None:
-                missing_info.append("shipper city")
-            if shipper_state is None:
-                missing_info.append("shipper state")
-
-            if missing_info:
-                response = f"Please provide the following missing information: {', '.join(missing_info)}."
-            else:
-                # Calculate the rate
-                rate = calculate_carrier_rate(distance, weight, consignee_city, consignee_state, shipper_city, shipper_state)
-                response = f"Calculated Rate: ${rate:.2f}"
-                
-                # Fetch necessary data from the database
-                # For example, load data based on some criteria from the user message
-                load = {}  # Replace with actual data fetching logic
-                response += ' Based on the load details you provided and historical load rates for similar loads, this should be a fair price for this load: ' + calculate_carrier_rate(load) + ' Is there anything else I can help you with?'
+    # If the message is too general, ask for more details
+    if user_message.strip() in ["rate", "rate quote"]:
+        await context.bot.send_message(chat_id=chat_id, text="Could you provide more details for the rate quote, such as shipper city, state, consignee city, state, distance, weight, and equipment type?")
+        return
     
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
+    # Regular expressions to extract information
+    city_state_pattern = r"(?P<city>[a-zA-Z\s]+),\s*(?P<state>[a-zA-Z\s]+)"
+    distance_pattern = r"(\d+)\s*miles"
+    weight_pattern = r"(\d+)\s*lbs"
+    equipment_pattern = r"dry van|flatbed|reefer"
+
+    # Try extracting information using regex
+    shipper_match = re.search(f"shipper city, state: {city_state_pattern}", user_message)
+    consignee_match = re.search(f"consignee city, state: {city_state_pattern}", user_message)
+    distance_match = re.search(distance_pattern, user_message)
+    weight_match = re.search(weight_pattern, user_message)
+    equipment_match = re.search(equipment_pattern, user_message)
+
+    rate_info = {
+        "shipperCity": shipper_match.group("city") if shipper_match else None,
+        "shipperState": shipper_match.group("state") if shipper_match else None,
+        "consigneeCity": consignee_match.group("city") if consignee_match else None,
+        "consigneeState": consignee_match.group("state") if consignee_match else None,
+        "distance": int(distance_match.group(1)) if distance_match else None,
+        "weight": int(weight_match.group(1)) if weight_match else None,
+        "equipmentType": equipment_match.group(0) if equipment_match else "dry van" # Default to dry van if not specified
+    }
+
+    # Check if all required fields are filled
+    missing_fields = [key for key, value in rate_info.items() if not value]    
+    if missing_fields:
+        # Use GPT-4 for interpretation
+        gpt_response = await chat_with_gpt(chat_id, "Can you extract the shipper city and state, consignee city and state, distance, weight, and equipment type from this message: '" + user_message + "'", task="info_extraction")
+        
+        # Process GPT-4 response to fill missing fields in rate_info
+        # This part needs to be implemented based on how you expect GPT-4 to respond
+        # For example:
+        if 'shipperCity' in missing_fields:
+            extracted_city = extract_city_from_gpt_response(gpt_response)
+            rate_info['shipperCity'] = extracted_city
+
+    # Check again if all required info is present
+    if all(value is not None for value in rate_info.values()):
+        # Prepare the arguments for the calculate_carrier_rate function
+        rate_args = {
+            "load_type": "FTL",  # Assuming FTL, adjust as needed
+            "equipment_type": rate_info["equipmentType"],
+            "distance": rate_info["distance"],
+            "weight": rate_info["weight"],
+            # Add more parameters as needed based on your calculate_carrier_rate function
+        }
+        rate = calculate_carrier_rate(**rate_args)
+        await context.bot.send_message(chat_id=chat_id, text=f"The estimated rate is: ${rate:.2f}")
+    else:
+        await context.bot.send_message(chat_id=chat_id, text="I couldn't extract all the necessary information. Please provide more details.")
+
+        
+        
+        
+def extract_city_from_gpt_response(gpt_response):
+    print("GPT-4 response:", gpt_response)
+    # Implement logic to extract city from GPT-4 response
+    # Example (you need to adapt this based on actual GPT-4 response):
+    match = re.search(r"Shipper City: (\w+)", gpt_response)
+    return match.group(1) if match else None
+
+
+# async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     chat_id = update.effective_chat.id
+#     user_message = update.message.text.lower() if update.message and update.message.text else ''
+#     user_data = context.user_data
+    
+#       # # Check if all required details are collected
+#         # if check_rate_info_completion(user_data):
+#         #     # Calculate the rate
+#         #     rate = calculate_carrier_rate(
+#         #         user_data["distance"], user_data["weight"],
+#         #         user_data["equipment_type"], user_data["consignee_city"],
+#         #         user_data["consignee_state"], user_data["shipper_city"],
+#         #         user_data["shipper_state"]
+#         #     )
+#         #     await context.bot.send_message(chat_id=chat_id, text=f"The estimated rate is: ${rate:.2f}")
+
+#         #     # Reset the flag and clear collected data
+#         #     user_data["collecting_rate_info"] = False
+#         #     clear_rate_info(user_data)
+
+#     # Check if the user is in the process of providing rate quote details
+#     if user_data.get("collecting_rate_info", False):
+#         key = next_key_to_collect(user_data["rate_info"])
+#         user_data["rate_info"][key] = user_message
+#         next_key = next_key_to_collect(user_data["rate_info"])
+#         if next_key:
+#             await context.bot.send_message(chat_id=chat_id, text=f"Please provide the {next_key}.")
+#         else:
+#             # All information collected, calculate rate
+#             rate_info = user_data["rate_info"]
+#             rate = calculate_carrier_rate(**rate_info)
+#             await context.bot.send_message(chat_id=chat_id, text=f"The estimated rate is: ${rate:.2f}")
+#             user_data["collecting_rate_info"] = False  # Reset flag
+#             user_data.pop("rate_info", None)  # Clear stored data
+#         return # Return to stay in the current conversation state
+#     else:
+#         # Start collecting rate quote information
+#         if "rate quote" in user_message or "calculate rate" in user_message or "rate" in user_message:
+#         # Start collecting rate quote information
+#             user_data["collecting_rate_info"] = True
+#             user_data["rate_info"] = {}  # Dictionary to store rate information
+#             await context.bot.send_message(chat_id=chat_id, text="Please provide the distance of the shipment.")
+#             return # Return to stay in the current conversation state
+#         else:
+#             # Normal conversation flow
+#             response = await chat_with_gpt(chat_id, user_message)
+#             await context.bot.send_message(chat_id=chat_id, text=response)
+
+#     return ConversationHandler.END
+
+# Helper functions for rate info collection
+def check_rate_info_completion(user_data):
+    required_fields = ["distance", "weight", "equipment_type", "consignee_city", "consignee_state", "shipper_city", "shipper_state"]
+    return all(field in user_data for field in required_fields)
+
+def clear_rate_info(user_data):
+    for field in ["distance", "weight", "equipment_type", "consignee_city", "consignee_state", "shipper_city", "shipper_state"]:
+        user_data.pop(field, None)
+
+async def chat_with_gpt_for_rate_info(chat_id, user_message, user_data):
+    # Implement GPT-4 conversation logic to collect rate info
+    # Store collected info in user_data
+    # Return the bot's response message
+    # ...
+    return "ok"
+
+
+async def handle_rate_quote_request(json_data):
+    if json_data.startswith("{") and json_data.endswith("}"):
+        try:
+            print("JSON Data:", json_data)
+            data = json.loads(json_data)
+            # Extract data from JSON
+            distance = data.get("distance")
+            weight = data.get("weight")
+            equip_type = data.get("equipmentType")
+            consignee_city = data.get("consigneeCity")
+            consignee_state = data.get("consigneeState")
+            shipper_city = data.get("shipperCity")
+            shipper_state = data.get("shipperState")
+
+            # Calculate rate
+            rate = await calculate_carrier_rate(distance, weight, equip_type, consignee_city, consignee_state, shipper_city, shipper_state)
+            return f"The estimated rate is: ${rate:.2f}"
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing JSON data: {e}")
+            return "Error parsing rate quote information."
+        except Exception as e:
+            logger.error(f"Error in handle_rate_quote_request: {e}")
+            return "Error calculating rate."
+    else:
+        return json_data  # Return the original message if it's not JSON
+    
+async def handle_mc_dot_lookup(user_message):
+    # Extract MC/DOT number from the message
+    # Perform the lookup
+    # ...
+    return "MC/DOT Lookup Result: ..."
+
+# async def handle_rate_quote_request(update, context):
+#     if update.message and update.message.text:
+#         user_message = update.message.text.lower()
+#         # Parse the message for distance, weight, and base rate
+#         # For simplicity, let's assume the user inputs text in a specific format like 'distance: 100, weight: 2000, base rate: 100'
+#         # In a real-world scenario, you might want to use more sophisticated parsing or NLP techniques
+#         distance = None
+#         shipper_city = None
+#         shipper_state = None
+#         consignee_city = None
+#         consignee_state = None
+#         weight = None
+
+#         for part in user_message.split(','):
+#             if 'distance:' in part:
+#                 distance = float(part.split(':')[1].strip())
+#             elif 'weight:' in part:
+#                 weight = float(part.split(':')[1].strip())
+#             elif 'shipper city:' in part:
+#                 shipper_city = part.split(':')[1].strip()
+#             elif 'shipper state:' in part:
+#                 shipper_state = part.split(':')[1].strip()
+#             elif 'consignee city:' in part:
+#                 consignee_city = part.split(':')[1].strip()
+#             elif 'consignee state:' in part:
+#                 consignee_state = part.split(':')[1].strip()
+                
+#                 # Check for missing information and prompt the user
+#                 missing_info = []
+#             if distance is None:
+#                 missing_info.append("distance")
+#             if weight is None:
+#                 missing_info.append("weight")
+#             if consignee_city is None:
+#                 missing_info.append("consignee city")
+#             if consignee_state is None:
+#                 missing_info.append("consignee state")
+#             if shipper_city is None:
+#                 missing_info.append("shipper city")
+#             if shipper_state is None:
+#                 missing_info.append("shipper state")
+
+#             if missing_info:
+#                 response = f"Please provide the following missing information: {', '.join(missing_info)}."
+#             else:
+#                 # Calculate the rate
+#                 rate = calculate_carrier_rate(distance, weight, consignee_city, consignee_state, shipper_city, shipper_state)
+#                 response = f"Calculated Rate: ${rate:.2f}"
+                
+#                 # Fetch necessary data from the database
+#                 # For example, load data based on some criteria from the user message
+#                 load = {}  # Replace with actual data fetching logic
+#                 response += ' Based on the load details you provided and historical load rates for similar loads, this should be a fair price for this load: ' + calculate_carrier_rate(load) + ' Is there anything else I can help you with?'
+    
+#                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
                     
 def error_handler(update, context):
     """Handle any errors that occur."""
