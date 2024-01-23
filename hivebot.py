@@ -33,6 +33,7 @@ user_conversations = {}  # A dictionary to store conversation history for each u
 # CHOOSING, TYPING_REPLY = range(2)
 NUMBER, VERIFY, CONFIRM_COMPANY, REENTER_NUMBER = range(4)
 GENERAL = 5
+DEFAULT = 6  # New state for default handling
 
 def update_conversation_history(user_id, user_message, bot_response):
     conversation = {
@@ -55,8 +56,19 @@ def get_conversation_history(user_id):
         logger.error(f"Error fetching conversation history: {e}")
         return []
 
+# Add a handler function for the DEFAULT state
+async def default_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # You can add a logic here to suggest options to the user
+    await update.message.reply_text(
+        "I'm not sure how to help with that. You can ask for a rate quote, provide an MC/DOT number, or type /help for more options.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return DEFAULT
 
-async def chat_with_gpt(user_id, user_message, task="conversation"):
+async def chat_with_gpt(user_id, user_message, task="conversation", context=None):
+    # let the user know the bot is typing
+    await context.bot.send_chat_action(chat_id=user_id, action='TYPING')
+    
     history = get_conversation_history(user_id)
     history.append({"role": "user", "content": user_message})
 
@@ -139,7 +151,8 @@ async def received_number(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("Your MC/DOT number could not be authorized. Please try again or contact support.")
     else:
         await update.message.reply_text("I couldn't find any MC/DOT info for that number. Please try again or contact support.")
-    return ConversationHandler.END
+        return DEFAULT  # Instead of ending the conversation
+    # return ConversationHandler.END
 
 async def confirm_company(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_response = update.message.text
@@ -254,7 +267,8 @@ def calculate_rate_with_gpt(user_message: str, user_id: str):
 def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Cancels and ends the conversation."""
         update.message.reply_text('Operation cancelled.', reply_markup=ReplyKeyboardMarkup(one_time_keyboard=True))
-        return ConversationHandler.END
+        return DEFAULT  # Instead of ending the conversation
+        # return ConversationHandler.END
     
 # async def start_command(update, context):
 #     await context.bot.send_message(chat_id=update.effective_chat.id, text='Hello, welcome to Hive-Bot. Please provide your MC or DOT number to get started. Type /list to see a list of all commands that hive-bot can perform.')
@@ -446,20 +460,25 @@ def next_key_to_collect(rate_info):
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_message = update.message.text.lower() if update.message and update.message.text else ''
-    
-    #let the user know the bot is typing
-await bot.send_chat_action(chat_id=chat_id, action=telegram.constants.ChatAction.TYPING)
+
+    # let the user know the bot is typing
+    await context.bot.send_chat_action(chat_id=chat_id, action='TYPING')
 
     # If the message is too general, ask for more details
     if user_message.strip() in ["rate", "rate quote"]:
-        await context.bot.send_message(chat_id=chat_id, text="Could you provide more details for the rate quote, such as shipper city, state, consignee city, state, distance, weight, and equipment type?")
+        await context.bot.send_message(chat_id=chat_id, text="Sure let's calculate a rate quote, please provide these details about the load: both the shipper and consignee's city, state, distance, weight, equipment type, hazmat(yes/no), extra stops, driver assistance, and storage days.")
         return
-    
+
     # Regular expressions to extract information
     city_state_pattern = r"(?P<city>[a-zA-Z\s]+),\s*(?P<state>[a-zA-Z\s]+)"
     distance_pattern = r"(\d+)\s*miles"
     weight_pattern = r"(\d+)\s*lbs"
     equipment_pattern = r"dry van|flatbed|reefer"
+    hazmat_pattern = r"hazmat|yes|no"
+    extra_stops_pattern = r"(\d+)\s*stops"
+    driver_assist_pattern = r"driver\s*assistance|yes|no"
+    storage_days_pattern = r"(\d+)\s*days"
+    
 
     # Try extracting information using regex
     shipper_match = re.search(f"shipper city, state: {city_state_pattern}", user_message)
@@ -467,6 +486,10 @@ await bot.send_chat_action(chat_id=chat_id, action=telegram.constants.ChatAction
     distance_match = re.search(distance_pattern, user_message)
     weight_match = re.search(weight_pattern, user_message)
     equipment_match = re.search(equipment_pattern, user_message)
+    hazmat_match = re.search(hazmat_pattern, user_message)
+    extra_stops_match = re.search(extra_stops_pattern, user_message)
+    driver_assist_match = re.search(driver_assist_pattern, user_message)
+    storage_days_match = re.search(storage_days_pattern, user_message)
 
     rate_info = {
         "shipperCity": shipper_match.group("city") if shipper_match else None,
@@ -475,14 +498,18 @@ await bot.send_chat_action(chat_id=chat_id, action=telegram.constants.ChatAction
         "consigneeState": consignee_match.group("state") if consignee_match else None,
         "distance": int(distance_match.group(1)) if distance_match else None,
         "weight": int(weight_match.group(1)) if weight_match else None,
-        "equipmentType": equipment_match.group(0) if equipment_match else "dry van" # Default to dry van if not specified
+        "equipmentType": equipment_match.group(0) if equipment_match else "dry van", # Default to dry van if not specified
+        "hazmat": hazmat_match.group(0) if hazmat_match else "no",  # Default to no if not specified
+        "extraStops": int(extra_stops_match.group(1)) if extra_stops_match else 0,  # Default to 0 if not specified
+        "driverAssistance": driver_assist_match.group(0) if driver_assist_match else "no",  # Default to no if not specified
+        "storageDays": int(storage_days_match.group(1)) if storage_days_match else 0  # Default to 0 if not specified
     }
 
     # Check if all required fields are filled
     missing_fields = [key for key, value in rate_info.items() if not value]    
     if missing_fields:
         # Use GPT-4 for interpretation
-        gpt_response = await chat_with_gpt(chat_id, "Can you extract the shipper city and state, consignee city and state, distance, weight, and equipment type from this message: '" + user_message + "'", task="info_extraction")
+        gpt_response = await chat_with_gpt(chat_id, "Act as an expert logistics professional specializing in freight carrier load rate quotes and extract the shipper city and state, consignee city and state, distance, weight, equipment type, hazmat, extra stops (if any), driver assistance (if any), and number of storage days (if any) from this carrier's message: '" + user_message + "'", task="info_extraction", context=context)
         
         # Process GPT-4 response to fill missing fields in rate_info
         # This part needs to be implemented based on how you expect GPT-4 to respond
@@ -506,9 +533,6 @@ await bot.send_chat_action(chat_id=chat_id, action=telegram.constants.ChatAction
     else:
         await context.bot.send_message(chat_id=chat_id, text="I couldn't extract all the necessary information. Please provide more details.")
 
-        
-        
-        
 def extract_city_from_gpt_response(gpt_response):
     print("GPT-4 response:", gpt_response)
     # Implement logic to extract city from GPT-4 response
@@ -686,12 +710,14 @@ async def verify_state_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 def timeout(update, context):
     """End the conversation after a timeout."""
     update.message.reply_text('Session timed out. Please start again.')
-    return ConversationHandler.END
+    return DEFAULT  # Instead of ending the conversation
+    # return ConversationHandler.END
 
 def end_conversation(update, context):
     """End the conversation gracefully."""
     update.message.reply_text('Thank you for using Hive-Bot. Have a great day!')
-    return ConversationHandler.END
+    return DEFAULT  # Instead of ending the conversation
+    # return ConversationHandler.END
 
 if __name__ == '__main__':
     try:
@@ -703,17 +729,19 @@ if __name__ == '__main__':
         text_message_handler = MessageHandler(filters.TEXT, text_message)
         # Conversation handler setup
         conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start_command)],
-        states={
+    entry_points=[CommandHandler('start', start_command)],
+    states={
         NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_number)],
         CONFIRM_COMPANY: [MessageHandler(filters.Regex('^(YES|NO)$'), confirm_company)],
         REENTER_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, reenter_number)],
         VERIFY: [MessageHandler(filters.TEXT & ~filters.COMMAND, verify_state_handler)],
         GENERAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, text_message)],
+        DEFAULT: [MessageHandler(filters.TEXT & ~filters.COMMAND, default_handler)],  # New state
     },
     fallbacks=[CommandHandler('cancel', cancel), CommandHandler('end', end_conversation)],
     conversation_timeout=300,
 )
+
 
     #     conv_handler = ConversationHandler(
     #     entry_points=[CommandHandler('start', start_command)],
