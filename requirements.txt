@@ -1,5 +1,5 @@
 python-telegram-bot
 requests
-telegram
 pymongo
-re
+openai
+pymongo
