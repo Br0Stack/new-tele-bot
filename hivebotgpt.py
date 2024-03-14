@@ -166,3 +166,9 @@ def next_key_to_collect(rate_info):
         if key not in rate_info:
             return key
     return None
+    # distance_pattern = r"\b(?:distance\s*[:=]?\s*|)(\d+)\s*(?:miles?|mi\b)"
+    # shipper_zip_pattern = r"\b(?:shipper(?:'s)?\s(?:zip(?:\scode)?|code)\s*[:=]?\s*|)(\d{5})\b" 
+    # consignee_zip_pattern = r"\b(?:consignee(?:'s)?\s(?:zip(?:\scode)?|code)\s*[:=]?\s*|)(\d{5})\b"
+    #     driver_assist_pattern = r"\bdriver\s(?:assistance|assist|help|aid|support|service)\b"
+    
+    
