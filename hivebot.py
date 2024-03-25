@@ -5,13 +5,13 @@ import requests
 import asyncio
 import os
 import logging
-import json
+# import json
 from openai import OpenAI
 from telegram.ext import ConversationHandler
 import re
 
 # States definition
-START, ENTER_NUMBER, VERIFY_NUMBER, AWAITING_RATE_COMMAND, INITIALIZE_RATE_QUOTE, COLLECTING_RATE_INFO, CALCULATING_RATE_QUOTE = range(7)
+START, ENTER_NUMBER, VERIFY_NUMBER, CONFIRM_COMPANY, AWAITING_RATE_COMMAND, INITIALIZE_RATE_QUOTE, COLLECTING_RATE_INFO, CALCULATING_RATE_QUOTE, AWAITING_RATE_DECISION, POST_RATE_ACTION = range(10)
 
 # Logging setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -40,26 +40,27 @@ async def start(update: Update, context: CallbackContext) -> int:
     )
     return ENTER_NUMBER
 
-async def enter_number(update: Update, context: CallbackContext) -> int:
-    # This function now combines logic for entering and verifying MC/DOT number directly.
-    number = update.message.text.strip()
-    context.user_data['number'] = number
-    response = await verify_number(number)  # Assume this is an asynchronous call to an external verification service
-    print(response)
-    if response and response['status'] == 'verified':
-        # Proceed to confirm company name
-        await ask_company_confirmation(update, context, response)
-    else:
-        # Handle non-verification outcomes
-        await handle_verification_failure(update, response)
-    return VERIFY_NUMBER
+# async def enter_number(update: Update, context: CallbackContext) -> int:
+#     # This function now combines logic for entering and verifying MC/DOT number directly.
+#     number = update.message.text.strip()
+#     context.user_data['number'] = number
+#     response = await verify_number(number, context, update)  # Assume this is an asynchronous call to an external verification service
+#     print("mc/dot", response)
+#     if response and response['status'] == 'verified':
+#         # Proceed to confirm company name
+#         await ask_company_confirmation(update, context, response)
+#     else:
+#         # Handle non-verification outcomes
+#         await handle_verification_failure(update, response)
+#     return VERIFY_NUMBER
 
-async def ask_company_confirmation(update: Update, context: CallbackContext, response):
-    # Logic for confirming company name extracted to a separate function for clarity
-    companyName = response['data'].get('carrier', {}).get('legalName') or response['data'].get('carrier', {}).get('dbaName', 'your company')
-    reply_keyboard = [['YES', 'NO']]
-    markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
-    await update.message.reply_text(f"Is {companyName} your company?", reply_markup=markup)
+# async def ask_company_confirmation(update: Update, context: CallbackContext, response):
+#     # Logic for confirming company name extracted to a separate function for clarity
+#     companyName = response['data'].get('carrier', {}).get('legalName') or response['data'].get('carrier', {}).get('dbaName', 'your company')
+#     reply_keyboard = [['YES', 'NO']]
+#     markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+#     await update.message.reply_text(f"Is {companyName} your company?", reply_markup=markup)
+#     return INITIALIZE_RATE_QUOTE if update.message.text == 'YES' else ENTER_NUMBER
 
 async def handle_verification_failure(update: Update, response):
     # Logic for handling verification failures extracted for clarity
@@ -74,7 +75,113 @@ async def handle_verification_failure(update: Update, response):
 #     context.user_data['number'] = number
 
 #     # Attempt to verify the MC/DOT number
-#     response = await verify_number(number)
+#     response = await verify_number(number, context)
+#     if response and response['status'] == 'verified':
+#         companyName = response['data']['carrier']['legalName'] or response['data']['carrier']['dbaName']
+#         reply_keyboard = [['YES', 'NO']]
+#         markup = ReplyKeyboardMarkup(reply_keyboard, input_field_placeholder=f"Is your company name {companyName}?", one_time_keyboard=True)
+#         await update.message.reply_text(f"Is your company name {companyName}?", reply_markup=markup)
+#         return response
+#     elif response and response['status'] == 'ask':
+#         companyName = response[0]['legalName'] or response[0]['dbaName']
+#         reply_keyboard = [['YES', 'NO']]
+#         markup = ReplyKeyboardMarkup(reply_keyboard, input_field_placeholder=f"Is your company name {companyName}?", one_time_keyboard=True)
+#         await update.message.reply_text(f"Is your company name {companyName}?", markup)
+#         if update.message.text == 'YES':
+#             await update.message.reply_text("Your MC/DOT was successfully verified. You can now use Hive Bot.")
+#             # Store the MC/DOT and user in the hive database
+#             try:  
+#                 db.users.update_one({'chat_id': update.effective_chat.id}, {'$set': {'mc_dot_number': number, 'fmcsa_data': response}}, upsert=True)
+#             except Exception as e:
+#                 logger.error(f"Database error: {e}")
+#         else: 
+#             await update.message.reply_text("Please re-enter your MC/DOT number.")
+#             return ENTER_NUMBER
+#     elif response and response['status'] == 'not_verified':
+#         await update.message.reply_text("Your MC/DOT number could not be authorized. Please try again or contact support.")
+#         return ENTER_NUMBER
+#     else:
+#         await update.message.reply_text("I couldn't find any MC/DOT info for that number. Please try again or contact support.")
+#         return ENTER_NUMBER
+
+# async def confirm_company(update: Update, context: CallbackContext) -> int:
+#     user_response = update.message.text.strip().upper()
+#     if user_response == 'YES':
+#         await update.message.reply_text("MC/DOT verified successfully. Send '/rate' to request a rate quote.", reply_markup=ReplyKeyboardRemove())
+#         return AWAITING_RATE_COMMAND
+#     else:
+#         await update.message.reply_text("Please re-enter your MC/DOT number.", reply_markup=ReplyKeyboardRemove())
+#         return ENTER_NUMBER
+
+# async def ask_company_confirmation(update: Update, context: CallbackContext) -> int:
+#     user_response = update.message.text
+#     print("context", context.user_data)
+#     if context.user_data['verified']:
+#         await update.message.reply_text("Your MC/DOT was successfully verified. You can now request a rate quote.", reply_markup=ReplyKeyboardRemove())
+#         return AWAITING_RATE_COMMAND  # Transition to a state ready for rate quotes
+#     else:
+#         await update.message.reply_text("Please re-enter your MC/DOT number.", reply_markup=ReplyKeyboardRemove())
+#         return ENTER_NUMBER
+
+async def reenter_number(update: Update, context: CallbackContext) -> int:
+    number = update.message.text
+    context.user_data['number'] = number
+
+    response = await verify_number(number, context)
+    if response and response['status'] in ['verified', 'ask']:
+        # Reuse the code to ask for company confirmation
+        companyName = response.get('data', {}).get('carrier', {}).get('legalName') or \
+                      response.get('data', {}).get('carrier', {}).get('dbaName')
+        reply_keyboard = [['YES', 'NO']]
+        markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+        await update.message.reply_text(f"Is your company name {companyName}?", reply_markup=markup)
+        return CONFIRM_COMPANY
+    else:
+        # Handle non-verified or error cases
+        await update.message.reply_text("I couldn't find any MC/DOT info for that number. Please try again or contact support.")
+        return ENTER_NUMBER
+    
+async def enter_number(update: Update, context: CallbackContext) -> int:
+    number = update.message.text.strip()
+    context.user_data['number'] = number
+    
+    # Assume verify_number properly checks the MC/DOT number
+    response = await verify_number(number, context)
+    
+    if response['status'] == 'verified':
+        # Store response details for later use
+        context.user_data['company_details'] = response['data']
+        companyName = response['data']['carrier']['legalName'] or response['data']['carrier']['dbaName']
+        reply_keyboard = [['YES', 'NO']]
+        markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+        await update.message.reply_text(f"Is {companyName} your company?", reply_markup=markup)
+        return CONFIRM_COMPANY
+    else:
+        # Handle failure or ask for re-entry
+        await update.message.reply_text("Your MC/DOT number could not be verified. Please try again.")
+        return ENTER_NUMBER
+
+async def confirm_company(update: Update, context: CallbackContext) -> int:
+    user_response = update.message.text.strip().upper()
+    if user_response == 'YES':
+        # Proceed to prompt for '/rate'
+        await update.message.reply_text(
+            "Your MC/DOT number is verified. You can now type '/rate' to request a rate quote.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return AWAITING_RATE_COMMAND
+    else:
+        # Assume NO or any other response requires re-entry
+        await update.message.reply_text("Please re-enter your MC/DOT number.")
+        return ENTER_NUMBER
+    
+
+# async def enter_number(update: Update, context: CallbackContext) -> int:
+#     number = update.message.text
+#     context.user_data['number'] = number
+
+#     # Attempt to verify the MC/DOT number
+#     response = await verify_number(number, context, update)
 #     if response and response['status'] == 'verified':
 #         companyName = response['data']['carrier']['legalName'] or response['data']['carrier']['dbaName']
 #         reply_keyboard = [['YES', 'NO']]
@@ -99,47 +206,8 @@ async def handle_verification_failure(update: Update, response):
 #     elif response and response['status'] == 'not_verified':
 #         await update.message.reply_text("Your MC/DOT number could not be authorized. Please try again or contact support.")
 #         return ENTER_NUMBER
-#     else:
-#         await update.message.reply_text("I couldn't find any MC/DOT info for that number. Please try again or contact support.")
-#         return ENTER_NUMBER
 
-async def confirm_company(update: Update, context: CallbackContext) -> int:
-    user_response = update.message.text.strip().upper()
-    if user_response == 'YES':
-        await update.message.reply_text("MC/DOT verified successfully. Send '/rate' to request a rate quote.", reply_markup=ReplyKeyboardRemove())
-        return AWAITING_RATE_COMMAND
-    else:
-        await update.message.reply_text("Please re-enter your MC/DOT number.", reply_markup=ReplyKeyboardRemove())
-        return ENTER_NUMBER
-
-# async def confirm_company(update: Update, context: CallbackContext) -> int:
-#     user_response = update.message.text
-#     if user_response == 'YES':
-#         await update.message.reply_text("Your MC/DOT was successfully verified. You can now request a rate quote.", reply_markup=ReplyKeyboardRemove())
-#         return AWAITING_RATE_COMMAND  # Transition to a state ready for rate quotes
-#     elif user_response == 'NO':
-#         await update.message.reply_text("Please re-enter your MC/DOT number.", reply_markup=ReplyKeyboardRemove())
-#         return ENTER_NUMBER
-
-# async def reenter_number(update: Update, context: CallbackContext) -> int:
-#     number = update.message.text
-#     context.user_data['number'] = number
-
-#     response = await verify_number(number)
-#     if response and response['status'] in ['verified', 'ask']:
-#         # Reuse the code to ask for company confirmation
-#         companyName = response.get('data', {}).get('carrier', {}).get('legalName') or \
-#                       response.get('data', {}).get('carrier', {}).get('dbaName')
-#         reply_keyboard = [['YES', 'NO']]
-#         markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
-#         await update.message.reply_text(f"Is your company name {companyName}?", reply_markup=markup)
-#         return CONFIRM_COMPANY
-#     else:
-#         # Handle non-verified or error cases
-#         await update.message.reply_text("I couldn't find any MC/DOT info for that number. Please try again or contact support.")
-#         return ENTER_NUMBER
-
-async def verify_number(number: str) -> dict:
+async def verify_number(number: str, context: CallbackContext) -> dict:
     """Verify the MC or DOT number."""
     # First, try with DOT number
     response = await verify_dot(number)
@@ -147,24 +215,26 @@ async def verify_number(number: str) -> dict:
         return response
     elif response['status'] == 'not_verified':
         # If DOT fails, try with MC number
-        response = await verify_mc(number)
+        response = await verify_mc(number, context)
         return response
     else:
         return {'status': 'error', 'message': 'Error verifying MC/DOT number.'}
-    
+
 async def verify_dot(user_message):
     dot_number = user_message # request.json['mc_dot_number']
     # Make the API call to FMCSA lookup API
-    response = requests.get(f"https://mobile.fmcsa.dot.gov/qc/services/carriers/{dot_number}?webKey={FMCSA_API_KEY}")
-    print(response.json())
-    details = response.json()['content']
+    # response = requests.get(f"https://mobile.fmcsa.dot.gov/qc/services/carriers/{dot_number}?webKey={FMCSA_API_KEY}")
+    # print(response.json())
+    # details = response.json()['content']
     # Check the conditions
-    if details and details['carrier']['allowedToOperate'].upper() in ['Y', 'YES']:
-        return {'status': 'verified', 'message': 'MC/DOT number verified.', 'data': details}
-    else:
-        return {'status': 'not_verified', 'message': 'DOT info not found. Please re-enter an MC or DOT number.'} 
+    # if details and details['carrier']['allowedToOperate'].upper() in ['Y', 'YES']:
+    return {'status': 'verified', 'message': 'MC/DOT number verified.', 'data': {'carrier': {'legalName': 'Test Company', 'dbaName': 'Test Company'}}}
 
-async def verify_mc(user_message, context):
+        # return {'status': 'verified', 'message': 'MC/DOT number verified.', 'data': details}
+    # else:
+    #     return {'status': 'not_verified', 'message': 'DOT info not found. Please re-enter an MC or DOT number.'} 
+
+async def verify_mc(user_message, context: CallbackContext):
     mc_number = user_message # request.json['mc_dot_number']
     # Make the API call to FMCSA lookup API
     response = requests.get(f"https://mobile.fmcsa.dot.gov/qc/services/carriers/docket-number/{mc_number}?webKey={FMCSA_API_KEY}")
@@ -176,6 +246,33 @@ async def verify_mc(user_message, context):
             return {'status': 'ask', 'message': 'MC/DOT number verified.', 'data': response.json()["content"]}
         else:
             return {'status': 'not_verified', 'message': 'MC info not found. Please re-enter an MC or DOT number.'}
+
+async def confirm_company(update: Update, context: CallbackContext) -> int:
+     # make the bot show 'typing...' status
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+    
+    user_response = update.message.text.strip().upper()
+    if user_response == 'YES':
+        await update.message.reply_text("Great! Please wait while we fetch your company information.")
+        number = context.user_data['number']
+        response = await verify_dot(number)
+        if response['status'] == 'verified':
+            await update.message.reply_text("MC Verified successfully. You can now use Hive Bot. Send '/rate' to request a rate quote.")
+        return AWAITING_RATE_COMMAND
+        #     # await ask_company_confirmation(update, context, response)
+        #     return INITIALIZE_RATE_QUOTE
+        # elif response['status'] == 'not_verified':
+        #     await handle_verification_failure(update, response)
+        #     return ENTER_NUMBER
+        # else:
+        #     await update.message.reply_text("Error verifying MC/DOT number.")
+        #     return ENTER_NUMBER
+    elif user_response == 'NO':
+        await update.message.reply_text("Please re-enter your MC/DOT number.")
+        return ENTER_NUMBER
+    else:
+        await update.message.reply_text("Invalid response. Please enter 'YES' or 'NO'.")
+        return CONFIRM_COMPANY
 
 async def rate_quote(update: Update, context: CallbackContext) -> int:
     """Send a message when the command /rate is issued."""
@@ -189,11 +286,11 @@ async def rate_quote(update: Update, context: CallbackContext) -> int:
     return INITIALIZE_RATE_QUOTE
 
 
-async def collect_rate_info(update: Update, context: CallbackContext) -> int:
-    # Collect and process rate information here
-    extract_and_calculate_rate_quote(update, context)
-    await update.message.reply_text("Calculating your rate based on the provided information...")
-    return CALCULATING_RATE_QUOTE
+# async def collect_rate_info(update: Update, context: CallbackContext) -> int:
+#     # Collect and process rate information here
+#     extract_and_calculate_rate_quote(update, context)
+#     await update.message.reply_text("Calculating your rate based on the provided information...")
+#     return CALCULATING_RATE_QUOTE
 
 # Mapping of equipment type names to codes
 EQUIPMENT_NAME_TO_CODE = {
@@ -220,116 +317,179 @@ EQUIPMENT_NAME_TO_CODE = {
 #     'reefer moff': 'RM'
 # }
 
-# Equipment type multipliers
+# equipmentType multipliers
 EQUIPMENT_TYPE_MULTIPLIERS = {
     'V': 1, 'PO': 1, 'FO': 0.8, 'R': 1.2, 'VM': 1.7, 'RM': 2.2, 'F': 0.8, 'FM': 1.5
 }
 
-async def calculate_approximate_rate_quote(db, load_criteria: dict, update, context):
+async def calculate_approximate_rate_quote(load_criteria: dict, update, context):
+     # make the bot show 'typing...' status
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+    
     try:
-        distance_tolerance = 600
-        weight_tolerance = 3000
+        distance_tolerance = 50
+        weight_tolerance = 1000
         
-        # Convert load criteria values to integers
-        shipper_zip = str(load_criteria.get("Shipper zip", ""))
-        consignee_zip = int(load_criteria.get("Consignee zip", 00000))
-        bill_distance = int(load_criteria.get("Bill Distance", 0))
-        weight = int(load_criteria.get("Weight", 0))
-        hazmat_routing = load_criteria.get("Hazmat routing", "No")
-        # extra_drops = int(load_criteria.get("Extra drops", 0))
-
-        # Convert load criteria values to integers
-        load_criteria["Shipper zip"] = str(load_criteria["Shipper zip"])  # Example conversion
-        load_criteria["Consignee zip"] = int(load_criteria["Consignee zip"])  # Example conversion
-        load_criteria["Bill Distance"] = int(load_criteria["Bill Distance"])  # Example conversion
-        load_criteria["Weight"] = int(load_criteria["Weight"])  # Example conversion
-        load_criteria["Hazmat routing"] = str(load_criteria["Hazmat routing"])  # Add Hazmat criteria
-        # load_criteria["Extra drops"] = int(load_criteria["Extra drops"])  # Example conversion
-        print("values pre pipeline --->", load_criteria)
+        # # Ensure load criteria values are correctly typed
+        # shipper_city = load_criteria.get("shipperCity", "Unknown")
+        # consignee_city = load_criteria.get("consigneeCity", "Unknown")
+        # # shipper_zip = load_criteria.get("shipperZip", "00000")
+        # # consignee_zip = load_criteria.get("consigneeZip", "00000")
+        # bill_distance = int(load_criteria.get("billDistance", 0))
+        # weight = int(load_criteria.get("weight", 0))
+        hazmat_routing = load_criteria.get("hazmatRouting", "No").upper()  # Ensure uppercase for consistency
+        shipper_city = load_criteria["shipperCity"]
+        consignee_city = load_criteria["consigneeCity"]
+        bill_distance = load_criteria["billDistance"]
+        weight = load_criteria["weight"]
+        driver_assistance = load_criteria["driverAssistance"]
         
-        # pipeline = [
-        #     {
-        #     "$match": {
-        #         'Shipper zip': load_criteria.get('Shipper zip', '00000'),
-        #         'Consignee zip': load_criteria.get('Consignee zip', 00000),
-        #         'Bill Distance': {
-        #         '$gte': load_criteria.get('Bill Distance', 0) - distance_tolerance,
-        #         '$lte': load_criteria.get('Bill Distance', 0) + distance_tolerance
-        #         },
-        #         'Weight': {
-        #         '$gte': load_criteria.get('Weight', 0) - weight_tolerance,
-        #         '$lte': load_criteria.get('Weight', 0) + weight_tolerance
-        #         },
-        #         # 'Hazmat routing': load_criteria.get('Hazmat routing', 'No'),
-        #         'Extra drops': load_criteria.get('Extra drops', 0)
-        #     }
-        #     },
-        #     {
-        #     '$group': {
-        #         '_id': None,
-        #         'averageRate': {'$avg': '$Rate'}
-        #     }
-        #     }
-        # ]
-        aggregation_dict = {
-                    'Shipper zip': load_criteria["Shipper zip"], 
-                    'Bill Distance': {
-                        '$gte': load_criteria["Bill Distance"] - distance_tolerance, 
-                        '$lte': load_criteria["Bill Distance"] + distance_tolerance
-                    }, 
-                    'Consignee zip': load_criteria["Consignee zip"], 
-                    'Weight': {
-                        '$gte': load_criteria["Weight"] - weight_tolerance, 
-                        '$lte': load_criteria["Weight"] + weight_tolerance
-                    },
-                    # "Extra drops": load_criteria["Extra drops"]
+        pipeline = [
+    {
+        '$match': {
+            'Shipper city': {'$eq': load_criteria['shipperCity'].upper()},
+            'Consignee city': {'$eq': load_criteria['consigneeCity'].upper()},
+            # Ensure these fields exist for the document to match
+            'Bill Distance': {'$exists': True, '$ne': None},
+            'Weight': {'$exists': True, '$ne': None}
+        }
+    },
+    {
+        '$addFields': {
+            'normalizedBillDistance': {
+                '$cond': {
+                    'if': {'$eq': [{'$type': '$Bill Distance'}, 'undefined']},
+                    'then': 0,  # Default value or another appropriate value for your use case
+                    'else': {'$toDouble': '$Bill Distance'}
                 }
-        print("aggregation_dict", aggregation_dict)
-        
-        client = MongoClient('mongodb+srv://Spenceg85:Gooddog400@cluster0.1fybtbs.mongodb.net/')
-        cursor = client['hivedb']['hive-cx-data'].aggregate([
-            {
-                '$match': {
-                    'Shipper zip': load_criteria["Shipper zip"], 
-                    'Bill Distance': {
-                        '$gte': load_criteria["Bill Distance"] - distance_tolerance, 
-                        '$lte': load_criteria["Bill Distance"] + distance_tolerance
-                    }, 
-                    'Consignee zip': load_criteria["Consignee zip"], 
-                    'Weight': {
-                        '$gte': load_criteria["Weight"] - weight_tolerance, 
-                        '$lte': load_criteria["Weight"] + weight_tolerance
-                    },
-                    # "Extra drops": load_criteria["Extra drops"]
-                }
-            }, {
-                '$group': {
-                    '_id': None, 
-                    'averageRate': {
-                        '$avg': '$Rate'
-                    }
+            },
+            'normalizedWeight': {
+                '$cond': {
+                    'if': {'$eq': [{'$type': '$Weight'}, 'undefined']},
+                    'then': 0,  # Default value or another appropriate value for your use case
+                    'else': {'$toDouble': '$Weight'}
                 }
             }
-        ])
+        }
+    },
+    {
+        '$match': {
+            'normalizedBillDistance': {
+                '$gte': load_criteria['billDistance'] - distance_tolerance,
+                '$lte': load_criteria['billDistance'] + distance_tolerance
+            },
+            'normalizedWeight': {
+                '$gte': load_criteria['weight'] - weight_tolerance,
+                '$lte': load_criteria['weight'] + weight_tolerance
+            }
+        }
+    },
+    {
+        '$group': {
+            '_id': None,
+            'averageRate': {'$avg': '$Rate'}
+        }
+    }
+]
         
+        # Debug: Print the pipeline
+        print("Executing Pipeline:", pipeline)
+
+        # pipeline = [
+        #     {
+        #         '$match': {
+        #             'Shipper city': shipper_city, 
+        #             'Consignee city': consignee_city,
+        #             'Bill Distance': {'$gte': bill_distance - distance_tolerance, '$lte': bill_distance + distance_tolerance},
+        #             'Weight': {'$gte': weight - weight_tolerance, '$lte': weight + weight_tolerance},
+        #         }
+        #     },
+        #     {
+        #         '$group': {
+        #             '_id': None,
+        #             'averageRate': {'$avg': '$Rate'}
+        #         }
+        #     }
+        # ]
+        # Define the aggregation pipeline using load criteria for filtering
+        # pipeline = [
+        #     {
+        #         '$match': {
+        #             # 'Shipper zip': shipper_zip, 
+        #             # 'Consignee zip': consignee_zip,
+        #             'Bill Distance': {
+        #                 '$gte': bill_distance - distance_tolerance, 
+        #                 '$lte': bill_distance + distance_tolerance
+        #             },
+        #             'Shipper city': shipper_city,
+        #             'Consignee city': consignee_city, 
+        #             'Weight': {
+        #                 '$gte': weight - weight_tolerance, 
+        #                 '$lte': weight + weight_tolerance
+        #             },
+        #             # Include hazmat routing in the match if relevant
+        #             # 'Hazmat Routing': hazmat_routing
+        #         }
+        #     },
+        #     {
+        #         '$set': {
+        #             # 'shipperZip': {'$toString': '$Shipper zip'},
+        #             # 'consigneeZip': {'$toString': '$Consignee zip'},
+        #             'shipperCity': {'$toString': '$Shipper city'},
+        #             'consigneeCity': {'$toString': '$Consignee city'},
+        #             'billDistance': {'$toInt': '$Bill Distance'},
+        #             'weight': {'$toInt': '$Weight'},
+        #         }
+        #     },
+        #     {
+        #         '$unset': ['Shipper city', 'Consignee city', 'Weight']
+        #     },
+        #     {
+        #         '$group': {
+        #             '_id': None, 
+        #             'averageRate': {'$avg': '$Rate'}
+        #         }
+        #     }
+        # ]
+
         # Execute the aggregation pipeline
-        client = db['hive-cx-data']
-        result = list(cursor)  # Convert cursor to list
+        client = MongoClient('mongodb+srv://Spenceg85:Gooddog400@cluster0.1fybtbs.mongodb.net/')
+        db = client['hivedb']
+        data = db['hive-cx-data']
+        cursor = data.aggregate(pipeline)
+        result = list(cursor)
+        print("CURSOR:", cursor)
         print("aggy result", result)
         if result and 'averageRate' in result[0]:
             print("aggy result successful", result)
             average_rate = result[0]['averageRate']
-            message = f"The estimated rate based on historically similar loads is: ${average_rate:.2f}"
+            message = f"The estimated rate based on historically similar loads is: ${float(average_rate.to_decimal()):.2f}"
         else:
             # Use the load criteria dictionary
-            distance = load_criteria.get("Bill Distance", 0)
+            distance = load_criteria.get("billDistance", 0)
             equipment_type_code = load_criteria.get("Equipment Type", 'V')  # Default to 'V'
             
             # Apply the equipment type multiplier
             multiplier = EQUIPMENT_TYPE_MULTIPLIERS.get(equipment_type_code, 1)  # Default multiplier to 1
             
             # If no similar historical data found or specific logic to decide to use base rate calculation:
-            base_rate = distance * 1.2 * multiplier
+            base_rate = distance * 1.4 * multiplier
+            total_rate = base_rate + (distance * 0.5)  # Fuel surcharge
+            message = f"The estimated rate based on historically similar loads is: ${float(average_rate.to_decimal()):.2f}"
+
+            # Also add a driver assistance fee if driver assistance is true
+            if driver_assistance == 'Yes':
+                total_rate += 100
+            
+            # # Also add a toll fee if tolls are true
+            # if load_criteria.get("Tolls", 'No') == 'Yes':
+            #     total_rate += 50
+            
+            # Set the base rate to 350 if it is less than 350
+            if base_rate < 350:
+                base_rate = 350
+            
+            # Calculate the total rate
             total_rate = base_rate + (distance * 0.5)  # Fuel surcharge
             
             # also add a hazmat fee if hazmat is true
@@ -337,19 +497,21 @@ async def calculate_approximate_rate_quote(db, load_criteria: dict, update, cont
                 total_rate += 200
             
             # Also add a driver assistance fee if driver assistance is true
-            if load_criteria.get("Driver assistance", 'No') == 'Yes':
+            if load_criteria.get("driverAssistance", 'No') == 'Yes':
                 total_rate += 100
-                
+            
             # # Also add a toll fee if tolls are true
             # if load_criteria.get("Tolls", 'No') == 'Yes':
             #     total_rate += 50
             
             message = f"Based on my analysis and calculations of the information provided, the estimated rate is: ${total_rate:.2f}"
+            
     except Exception as e:
         message = f"Sorry, I couldn't process that rate due to an error: {e}"
-
+        
+    # await context.bot.send_message(chat_id=update.effective_chat.id, text=message)
+        
     return message
-
             
         # aggregation = hiveData.aggregate(pipeline)
         # result = list(aggregation)
@@ -362,55 +524,62 @@ async def calculate_approximate_rate_quote(db, load_criteria: dict, update, cont
     #         return "No similar historical data found to calculate an approximate rate."
     # except Exception as e:
     #     return f"Sorry, I couldn't process that due to an error: {e}"
-
-    
-async def extract_initial_load_criteria(update, context):
+     
+async def extract_initial_load_criteria(update: Update, context: CallbackContext):
     user_message = update.message.text.lower()
+    
+    # make the bot show 'typing...' status
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
 
     # Default values
     load_criteria = {
-        'Driver assistance': 'No',
-        'Equipment type': 'V',
-        'Hazmat routing': 'No'  # Set default value to 'No'
+        'driverAssistance': 'No',
+        'equipmentType': 'V',
+        'hazmatRouting': 'No'  # Set default value to 'No'
     }
 
     # Extract information with improved regex patterns
     regex_patterns = {
-        'Shipper zip': r"\b(?:from\szip\scode|from\szip|shipper'?s?\szip)\s*(\d{5})",
-        'Consignee zip': r"\b(?:to\szip\scode|to\szip|consignee'?s?\szip)\s*(\d{5})",
-        'Bill Distance': r"\b(\d+)\s*miles", 
-        'Weight': r"\b(\d+)\s*lbs",
-        'Equipment type': r"(?i)\b(dry van|van|reefer|flatbed|power only|flatbed moffett|van moffett|reefer moffett)\b",
-        'Hazmat routing': r"(?i)\b(hazmat|no hazmat)\b",
-        'Driver assistance': r"(?i)\b(driver assist|no driver assist)\b"
+        'shipperCity': r"\b(?:from|shipper)\s*([a-zA-Z\s]+)",
+        'consigneeCity': r"\b(?:to|consignee)\s*([a-zA-Z\s]+)",
+        'billDistance': r"\b(\d+)\s*miles", 
+        'weight': r"\b(\d+)\s*lbs",
+        'equipmentType': r"(?i)\b(dry van|van|reefer|flatbed|power only|flatbed moffett|van moffett|reefer moffett)\b",
+        'hazmatRouting': r"(?i)\b(hazmat|no hazmat)\b",
+        'driverAssistance': r"(?i)\b(driver assist|no driver assist)\b"
     }
 
     for key, pattern in regex_patterns.items():
         match = re.search(pattern, user_message)
         if match:
-            load_criteria[key] = int(match.group(1)) if key in ['Bill Distance', 'Weight'] else match.group(1)
+            if key in ['shipperCity', 'consigneeCity']:
+                city = match.group(1).strip()
+                city = city.split()[-1]  # Extract the last word as the city
+                load_criteria[key] = city
+            else:
+                load_criteria[key] = int(match.group(1)) if key in ['billDistance', 'weight'] else match.group(1)
 
     # Extract and map equipment type from user message
     for keyword, code in EQUIPMENT_NAME_TO_CODE.items():
         if keyword in user_message:
-            load_criteria['Equipment type'] = code
+            load_criteria['equipmentType'] = code
             break
 
     # Determine driver assistance requirement
     if 'no driver assist' in user_message:
-        load_criteria['Driver assistance'] = 'No'
+        load_criteria['driverAssistance'] = 'No'
     elif 'driver assist' in user_message:
-        load_criteria['Driver assistance'] = 'Yes'
+        load_criteria['driverAssistance'] = 'Yes'
 
     # Determine hazmat routing
     if 'hazmat' in user_message:
-        load_criteria['Hazmat routing'] = 'Yes'
+        load_criteria['hazmatRouting'] = 'Yes'
     elif 'no hazmat' in user_message:
-        load_criteria['Hazmat routing'] = 'No'
+        load_criteria['hazmatRouting'] = 'No'
 
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=f"I understand your load criteria is: {load_criteria}, please wait while I run some advanced calculations and analysis..."
+        text=f"I understand your load criteria is: {load_criteria}, please wait a moment while I run some advanced calculations and analysis..."
     )
 
     return load_criteria
@@ -424,7 +593,7 @@ async def ask_for_clarification(chat_id, prompt, context):
     user_response = "user response here"
     return user_response
 
-async def extract_and_calculate_rate_quote(update, context):
+async def extract_and_calculate_rate_quote(update: Update, context: CallbackContext):
     user_message = update.message.text.strip()
     chat_id = update.effective_chat.id
 
@@ -442,7 +611,7 @@ async def extract_and_calculate_rate_quote(update, context):
             return INITIALIZE_RATE_QUOTE
 
     # Aggregation and Calculation
-    rate_quote = await calculate_approximate_rate_quote(db, load_criteria, update, context)
+    rate_quote = await calculate_approximate_rate_quote(load_criteria, update, context)
 
     # Send the calculated rate quote to the user
     await context.bot.send_message(chat_id=chat_id, text=f"The estimated rate is: ${rate_quote}")
@@ -450,11 +619,11 @@ async def extract_and_calculate_rate_quote(update, context):
     # Prompt for feedback or next action
     await context.bot.send_message(chat_id=chat_id, text="Please provide your feedback on the quote or let me know if you want to request another quote or switch to conversational mode.")
 
-    return ConversationHandler.END
+    return POST_RATE_ACTION
 
 async def check_missing_or_unclear_fields(load_criteria, update):
     # Identify fields that are missing or need clarification
-    missing_fields = [field for field, value in load_criteria.items() if value is None]
+    missing_fields = [field for field, value in load_criteria.items() if value is None or value == 'Unknown' or value == '']
     if missing_fields:
         message = "The following fields are missing or need clarification:\n"
         for field in missing_fields:
@@ -471,26 +640,58 @@ async def collect_rate_info(update: Update, context: CallbackContext) -> int:
     load_criteria = await extract_initial_load_criteria(update, context)
     
     # Calculate and return the rate quote based on the extracted criteria
-    rate_quote_message = await calculate_approximate_rate_quote(db, load_criteria, update, context)
+    rate_quote_message = await calculate_approximate_rate_quote(load_criteria, update, context)
     await context.bot.send_message(chat_id=update.effective_chat.id, text=rate_quote_message)
-    return ConversationHandler.END
+    return AWAITING_RATE_DECISION
 
 
 async def calculate_rate_quote(update: Update, context: CallbackContext) -> int:
     # Perform rate calculation here
     # Placeholder implementation
     await update.message.reply_text("Based on the information provided, your estimated rate is: $XXX.XX")
-    return ConversationHandler.END
+#     return POST_RATE_ACTION
+
+# # Post Rate Action
+# async def post_rate_action(update: Update, context: CallbackContext) -> int:
+#     reply_keyboard = [['Yes', 'No']]
+#     markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+#     await update.message.reply_text(
+#         "Would you like another rate quote? Reply 'Yes' to continue or 'No' to exit.",
+#         reply_markup=markup
+#     )
+    return AWAITING_RATE_DECISION
+
+# Handle the decision for the next rate action
+async def handle_rate_decision(update: Update, context: CallbackContext) -> int:
+    user_response = update.message.text.strip().upper()
+    if user_response == 'YES':
+        # Transition back to awaiting '/rate' command
+        await update.message.reply_text(
+            "Great! Send '/rate' to request another rate quote.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return AWAITING_RATE_COMMAND
+    else:
+        # End the conversation if the user chooses 'No'
+        await update.message.reply_text(
+            "Thank you for using Hive Bot. Have a great day!",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
 
 # Error handler
 def error_handler(update: Update, context: CallbackContext):
     logger.warning(f'Update "{update}" caused error "{context.error}"')
+    # Inform the user
+    context.bot.send_message(chat_id=update.effective_chat.id, text="An error occurred. Please try again or type '/cancel' to restart.")
+    # Returning POST_RATE_ACTION or AWAITING_RATE_COMMAND could help guide the user back to a functional state
+    return POST_RATE_ACTION
 
 
 async def cancel(update: Update, context: CallbackContext) -> int:
     """Cancels and ends the conversation."""
     await update.message.reply_text('Operation cancelled.', reply_markup=ReplyKeyboardRemove())
-    return ConversationHandler.END
+    return AWAITING_RATE_COMMAND
 
 def main():
     application = Application.builder().token(os.environ["TELEGRAM_API_KEY"]).build()
@@ -499,14 +700,16 @@ def main():
         entry_points=[CommandHandler('start', start)],
         states={
             ENTER_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_number)],
-            VERIFY_NUMBER: [MessageHandler(filters.TEXT, confirm_company)],
+            CONFIRM_COMPANY: [MessageHandler(filters.TEXT, confirm_company)],
             AWAITING_RATE_COMMAND: [CommandHandler('rate', rate_quote)],
             INITIALIZE_RATE_QUOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_rate_info)],
-            CALCULATING_RATE_QUOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, calculate_rate_quote)]
+            CALCULATING_RATE_QUOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, extract_and_calculate_rate_quote)],
+            # POST_RATE_ACTION: [MessageHandler(filters.TEXT, post_rate_action)],  # Handles post-rate actions
+            AWAITING_RATE_DECISION: [MessageHandler(filters.TEXT, handle_rate_decision)]  # New state to handle the decision
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
-
+    
     application.add_handler(conv_handler)
 
     # Start the Bot
