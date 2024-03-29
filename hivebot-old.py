@@ -738,3 +738,60 @@ if __name__ == '__main__':
 
   # Run the bot and Flask app
     # asyncio.get_event_loop().create_task(application.run_polling())
+
+
+# async def enter_number(update: Update, context: CallbackContext) -> int:
+#     number = update.message.text
+#     context.user_data['number'] = number
+
+#     # Attempt to verify the MC/DOT number
+#     response = await verify_number(number, context)
+#     if response and response['status'] == 'verified':
+#         companyName = response['data']['carrier']['legalName'] or response['data']['carrier']['dbaName']
+#         reply_keyboard = [['YES', 'NO']]
+#         markup = ReplyKeyboardMarkup(reply_keyboard, input_field_placeholder=f"Is your company name {companyName}?", one_time_keyboard=True)
+#         await update.message.reply_text(f"Is your company name {companyName}?", reply_markup=markup)
+#         return response
+#     elif response and response['status'] == 'ask':
+#         companyName = response[0]['legalName'] or response[0]['dbaName']
+#         reply_keyboard = [['YES', 'NO']]
+#         markup = ReplyKeyboardMarkup(reply_keyboard, input_field_placeholder=f"Is your company name {companyName}?", one_time_keyboard=True)
+#         await update.message.reply_text(f"Is your company name {companyName}?", markup)
+#         if update.message.text == 'YES':
+#             await update.message.reply_text("Your MC/DOT was successfully verified. You can now use Hive Bot.")
+#             # Store the MC/DOT and user in the hive database
+#             try:  
+#                 db.users.update_one({'chat_id': update.effective_chat.id}, {'$set': {'mc_dot_number': number, 'fmcsa_data': response}}, upsert=True)
+#             except Exception as e:
+#                 logger.error(f"Database error: {e}")
+#         else: 
+#             await update.message.reply_text("Please re-enter your MC/DOT number.")
+#             return ENTER_NUMBER
+#     elif response and response['status'] == 'not_verified':
+#         await update.message.reply_text("Your MC/DOT number could not be authorized. Please try again or contact support.")
+#         return ENTER_NUMBER
+#     else:
+#         await update.message.reply_text("I couldn't find any MC/DOT info for that number. Please try again or contact support.")
+#         return ENTER_NUMBER
+
+# async def confirm_company(update: Update, context: CallbackContext) -> int:
+#     user_response = update.message.text.strip().upper()
+#     if user_response == 'YES':
+#         await update.message.reply_text("MC/DOT verified successfully. Send '/rate' to request a rate quote.", reply_markup=ReplyKeyboardRemove())
+#         return AWAITING_RATE_COMMAND
+#     else:
+#         await update.message.reply_text("Please re-enter your MC/DOT number.", reply_markup=ReplyKeyboardRemove())
+#         return ENTER_NUMBER
+
+# async def ask_company_confirmation(update: Update, context: CallbackContext) -> int:
+#     user_response = update.message.text
+#     print("context", context.user_data)
+#     if context.user_data['verified']:
+#         await update.message.reply_text("Your MC/DOT was successfully verified. You can now request a rate quote.", reply_markup=ReplyKeyboardRemove())
+#         return AWAITING_RATE_COMMAND  # Transition to a state ready for rate quotes
+#     else:
+#         await update.message.reply_text("Please re-enter your MC/DOT number.", reply_markup=ReplyKeyboardRemove())
+#         return ENTER_NUMBER
+
+
+# <iframe src="https://snapcraft.io/telegram-desktop/embedded?button=white&channels=true&summary=true&screenshot=true" frameborder="0" width="100%" height="890px" style="border: 1px solid #CCC; border-radius: 2px;"></iframe>
