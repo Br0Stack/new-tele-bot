@@ -1,6 +1,6 @@
 :fire: **Hive Engine Logistics Platform AI Telegram Bot** :fire:
 
-Welcome to the AI Telegram Bot repository designed to revolutionize the logistics industry. This bot, built in Python, leverages SuperDuperDB-wrapped MongoDB for advanced functionality. It assists customers and carriers by providing real-time rate quotes based on historical industry rate trend data, tracking updates, load information, routing details, and more!
+Welcome to the AI Telegram Bot repository designed to revolutionize the logistics industry. This bot, built in Python, leverages MongoDB Aggregation pipelines and the OpenAi Completions API for advanced functionality. It assists customers and carriers by providing real-time rate quotes based on historical industry rate trend data, tracking updates, load information, routing details, and more!
 
 
 **Table of Contents**
